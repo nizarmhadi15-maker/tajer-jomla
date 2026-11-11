@@ -449,7 +449,7 @@ async function vAdmin(){
           <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span></div>
           <div class="muted small">${esc(u.name)} · ${esc(u.phone)}${u.subUntil && !u.admin ? ' · حتى '+fmtDay(u.subUntil) : ''}</div>
           ${u.admin ? '' : `<div class="grid2" style="grid-template-columns:repeat(4,1fr);margin-top:10px">${[[1,'+ شهر'],[3,'+ 3 شهور'],[6,'+ 6 شهور'],[12,'+ سنة']].map(([m,l]) => `<button class="btn small" data-ext="${u.id}" data-m="${m}">${l}</button>`).join('')}</div>
-            <div class="row"><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>`}</div>`; }).join('')}`;
+            <div class="row"><button class="btn small" data-date="${u.id}">📅 تعديل التاريخ</button><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>`}</div>`; }).join('')}`;
       bindSearch('#usrch', '.urow');
       $$('[data-ext]').forEach(b => {
         const u = U.find(x => x.id===b.dataset.ext), m = Number(b.dataset.m);
@@ -465,6 +465,27 @@ async function vAdmin(){
             vAdmin();
           } catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
         });
+      });
+      $$('[data-date]').forEach(b => b.onclick = () => {
+        const u = U.find(x => x.id===b.dataset.date);
+        const cur = new Date(Math.max(Date.now(), u.subUntil || 0));
+        const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        openModal(`<h2>📅 تعديل اشتراك ${esc(u.shop)}</h2>
+          <p class="muted">الحالي: ${userActive(u) ? 'فعّال حتى ' + fmtDay(u.subUntil) : 'منتهي'}</p>
+          <label>ينتهي الاشتراك بتاريخ</label><input type="date" id="subDate" value="${iso(cur)}">
+          <button class="btn primary big" id="saveDate">💾 حفظ التاريخ</button>
+          <button class="btn danger big" id="stopSub">⛔ إيقاف الاشتراك الآن</button>`);
+        const save = async (until, msg) => {
+          try { await updateDoc(doc(db,'users',u.id), { subUntil:until }); closeModal(); toast(msg); vAdmin(); }
+          catch(err){ toast('فشل: ' + err.code); }
+        };
+        $('#saveDate').onclick = () => {
+          const v = $('#subDate').value; if(!v) return toast('اختار تاريخ');
+          const [y,m,d] = v.split('-').map(Number);
+          const until = new Date(y, m-1, d, 23, 59, 59).getTime();
+          save(until, until > Date.now() ? `صار اشتراك ${u.shop} حتى ${fmtDay(until)}` : `اشتراك ${u.shop} صار منتهي`);
+        };
+        twoTap($('#stopSub'), 'اضغط مرة ثانية للتأكيد', () => save(Date.now() - 1000, `تم إيقاف اشتراك ${u.shop}`));
       });
       $$('[data-wa]').forEach(b => b.onclick = () => { const u = U.find(x => x.id===b.dataset.wa); whatsapp(u.phone, `مرحبا ${u.name}، معك إدارة تطبيق تاجر جملة.`); });
     }
