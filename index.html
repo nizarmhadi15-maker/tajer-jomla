@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="theme-color" content="#0f766e">
 <title>تاجر جملة</title>
-<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js" defer></script>
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+<link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js">
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js">
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js">
 <style>
 :root{--p:#0f766e;--p2:#14b8a6;--bg:#f1f5f4;--card:#fff;--tx:#1f2937;--mu:#6b7280;--bd:#e5e7eb;--dan:#dc2626}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -98,6 +103,11 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--p2);border-color
 #toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:#111827;color:#fff;padding:11px 18px;border-radius:12px;opacity:0;transition:.25s;z-index:50;pointer-events:none;max-width:90%;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .loading{text-align:center;padding:30px;color:var(--mu)}
+.splash{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:70vh;color:var(--p);font-size:22px}
+.slogo{font-size:64px;animation:pop 1s ease-in-out infinite alternate}
+@keyframes pop{from{transform:scale(.92)}to{transform:scale(1.06)}}
+.spin{width:30px;height:30px;border:3px solid #cce7e3;border-top-color:var(--p);border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
 #printArea{display:none}
 #printArea.show{display:block;position:fixed;inset:0;background:#fff;z-index:40;overflow:auto;padding:12px}
 .pbar{display:flex;gap:8px;justify-content:space-between;margin-bottom:12px}
@@ -121,7 +131,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--p2);border-color
 </head>
 <body>
 <header id="topbar" class="hidden"><span id="ttl">تاجر جملة</span></header>
-<main id="app"><div class="loading">⏳ جاري التحميل...</div></main>
+<main id="app"><div class="splash"><div class="slogo">🛒</div><b>تاجر جملة</b><div class="spin"></div></div></main>
 <nav id="tabs" class="hidden"></nav>
 <div id="modal" class="hidden"></div>
 <div id="toast"></div>
@@ -154,6 +164,7 @@ const DAY = 86400000;
 const DEFAULT_CFG = { traderPrice:50, grocerPrice:20, trialDays:14, payInfo:'' };
 S.cfg = { ...DEFAULT_CFG };
 S.atab = 'pays';
+const monthsDays = m => m === 12 ? 365 : m * 30;
 const isActive = () => !!S.me && (S.me.admin === true || (S.me.subUntil || 0) > Date.now());
 const daysLeft = () => Math.max(0, Math.ceil(((S.me?.subUntil || 0) - Date.now()) / DAY));
 const userActive = u => u.admin === true || (u.subUntil || 0) > Date.now();
@@ -262,22 +273,35 @@ onAuthStateChanged(auth, async user => {
 });
 
 async function enter(user){
-  app.innerHTML = '<div class="loading">⏳ جاري التحميل...</div>';
-  let snap;
-  try { snap = await getDoc(doc(db,'users',user.uid)); } catch(e){ app.innerHTML = emptyBox('📡','تعذّر الاتصال. تأكد من الإنترنت وأعد فتح التطبيق.'); return; }
-  if(!snap.exists()){ toast('الحساب غير مكتمل، سجّل من جديد'); await signOut(auth); return; }
-  S.me = { id:user.uid, ...snap.data() };
-  await loadCfg();
+  const meKey = 'tj_me_' + user.uid;
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(meKey) || 'null'); } catch(e){}
+  try { const c = JSON.parse(localStorage.getItem('tj_cfg') || 'null'); if(c) S.cfg = { ...DEFAULT_CFG, ...c }; } catch(e){}
+  const cfgP = loadCfg().then(() => { try { localStorage.setItem('tj_cfg', JSON.stringify(S.cfg)); } catch(e){} });
+  if(cached){
+    S.me = { id:user.uid, ...cached };
+  } else {
+    app.innerHTML = '<div class="splash"><div class="slogo">🛒</div><b>تاجر جملة</b><div class="spin"></div></div>';
+    let snap;
+    try { snap = await getDoc(doc(db,'users',user.uid)); } catch(e){ app.innerHTML = emptyBox('📡','تعذّر الاتصال. تأكد من الإنترنت وأعد فتح التطبيق.'); return; }
+    if(!snap.exists()){ toast('الحساب غير مكتمل، سجّل من جديد'); await signOut(auth); return; }
+    S.me = { id:user.uid, ...snap.data() };
+    await cfgP;
+  }
   if(!S.me.admin && S.me.subUntil == null){
     const until = Date.now() + Math.min(30, S.cfg.trialDays) * DAY;
     S.me.subUntil = until;
     updateDoc(doc(db,'users',user.uid), { subUntil:until }).catch(() => {});
   }
   S.unsubs.push(onSnapshot(doc(db,'users',user.uid), s => {
-    if(!s.exists() || !S.me) return;
-    const was = isActive();
-    S.me = { id:user.uid, ...s.data() };
+    if(!S.me) return;
+    if(!s.exists()){ if(!s.metadata.fromCache){ try { localStorage.removeItem(meKey); } catch(e){} toast('الحساب غير موجود، سجّل من جديد'); signOut(auth); } return; }
+    const was = isActive(), oldAdmin = !!S.me.admin;
+    const d = s.data();
+    S.me = { id:user.uid, ...d };
+    try { localStorage.setItem(meKey, JSON.stringify({ ...d, createdAt:null })); } catch(e){}
     if(was !== isActive()){ toast(isActive() ? '✅ تم تفعيل اشتراكك' : '⛔ انتهى اشتراكك'); render(); }
+    else if(oldAdmin !== !!S.me.admin) render();
   }));
   S.tab = S.me.role === 'trader' ? 'products' : 'traders';
   S.firstOrders = true; S.traders = null; S.viewTrader = null;
@@ -393,7 +417,7 @@ async function vAdmin(){
         const p = P.find(x => x.id===b.dataset.ok); b.disabled = true;
         try {
           const u = await getDoc(doc(db,'users',p.uid));
-          const until = Math.max(Date.now(), u.data()?.subUntil || 0) + p.months * 30 * DAY;
+          const until = Math.max(Date.now(), u.data()?.subUntil || 0) + monthsDays(p.months) * DAY;
           const bt = writeBatch(db);
           bt.update(doc(db,'users',p.uid), { subUntil:until });
           bt.update(doc(db,'payments',p.id), { status:'approved', newUntil:until, decidedAt:serverTimestamp() });
@@ -423,14 +447,23 @@ async function vAdmin(){
         ${U.map(u => { const a = userActive(u); return `<div class="card urow" data-s="${esc(u.shop+' '+u.name+' '+u.phone)}">
           <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span></div>
           <div class="muted small">${esc(u.name)} · ${esc(u.phone)}${u.subUntil && !u.admin ? ' · حتى '+fmtDay(u.subUntil) : ''}</div>
-          ${u.admin ? '' : `<div class="row"><button class="btn small" data-ext="${u.id}">+ شهر</button><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>`}</div>`; }).join('')}`;
+          ${u.admin ? '' : `<div class="grid2" style="grid-template-columns:repeat(4,1fr);margin-top:10px">${[[1,'+ شهر'],[3,'+ 3 شهور'],[6,'+ 6 شهور'],[12,'+ سنة']].map(([m,l]) => `<button class="btn small" data-ext="${u.id}" data-m="${m}">${l}</button>`).join('')}</div>
+            <div class="row"><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>`}</div>`; }).join('')}`;
       bindSearch('#usrch', '.urow');
-      $$('[data-ext]').forEach(b => b.onclick = async () => {
-        const u = U.find(x => x.id===b.dataset.ext);
-        const until = Math.max(Date.now(), u.subUntil || 0) + 30 * DAY;
-        b.disabled = true;
-        try { await updateDoc(doc(db,'users',u.id), { subUntil:until }); toast(`تم تمديد ${u.shop} حتى ${fmtDay(until)}`); vAdmin(); }
-        catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+      $$('[data-ext]').forEach(b => {
+        const u = U.find(x => x.id===b.dataset.ext), m = Number(b.dataset.m);
+        twoTap(b, 'تأكيد؟', async () => {
+          const until = Math.max(Date.now(), u.subUntil || 0) + monthsDays(m) * DAY;
+          b.disabled = true;
+          try {
+            await updateDoc(doc(db,'users',u.id), { subUntil:until });
+            toast(`تم تمديد ${u.shop} حتى ${fmtDay(until)}`);
+            openModal(`<div style="text-align:center"><div style="font-size:50px">✅</div><h2>تم تمديد ${esc(u.shop)}</h2><p class="muted">حتى ${fmtDay(until)}</p>
+              <button class="btn primary big" id="waExt">💬 بلّغه على واتساب</button></div>`);
+            $('#waExt').onclick = () => whatsapp(u.phone, `مرحبا ${u.name}، تم تفعيل اشتراكك في تطبيق تاجر جملة حتى ${fmtDay(until)}. شكراً إلك 🌹`);
+            vAdmin();
+          } catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+        });
       });
       $$('[data-wa]').forEach(b => b.onclick = () => { const u = U.find(x => x.id===b.dataset.wa); whatsapp(u.phone, `مرحبا ${u.name}، معك إدارة تطبيق تاجر جملة.`); });
     }
@@ -696,8 +729,16 @@ function orderModal(o){
   }
 }
 
-function exportExcel(o){
-  if(!window.XLSX) return toast('مكتبة Excel لسا ما حمّلت، جرّب بعد ثواني');
+function loadXLSX(){
+  if(S._xlsxP) return S._xlsxP;
+  S._xlsxP = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js'; s.onload = res; s.onerror = () => { S._xlsxP = null; rej(); }; document.head.appendChild(s); });
+  return S._xlsxP;
+}
+async function exportExcel(o){
+  if(!window.XLSX){
+    toast('⏳ جاري تجهيز ملف Excel...');
+    try { await loadXLSX(); } catch(e){ return toast('تعذّر تحميل مكتبة Excel، تأكد من الإنترنت'); }
+  }
   const rows = [
     ['طلبية رقم', o.no], ['التاريخ', fmtDate(o.createdAt)],
     ['البقالة', o.grocerShop], ['صاحب البقالة', o.grocerName], ['جوال البقالة', o.grocerPhone], ['المنطقة', o.grocerArea || ''],
