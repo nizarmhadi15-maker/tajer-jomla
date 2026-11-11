@@ -69,7 +69,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--p2);border-color
 .chip{border:1px solid var(--bd);background:#fff;border-radius:20px;padding:6px 12px;white-space:nowrap;font:inherit;font-size:14px}
 .chip.on{background:var(--p);color:#fff;border-color:var(--p)}
 .tcard{display:flex;gap:12px;align-items:center;cursor:pointer}
-.tcard .av{width:50px;height:50px;border-radius:50%;background:#e6f4f2;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
+.tcard .av,.avt{width:50px;height:50px;border-radius:50%;background:#e6f4f2;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;object-fit:cover}
+.avt.big{width:96px;height:96px;font-size:48px;margin:0 auto;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.avt.sm{width:34px;height:34px;font-size:17px}
 .back{border:0;background:none;color:var(--p);font:inherit;font-weight:bold;padding:4px 0 10px}
 .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 .cartbar{position:fixed;bottom:66px;left:12px;right:12px;background:var(--p);color:#fff;border-radius:14px;padding:13px 16px;display:flex;justify-content:space-between;font-weight:bold;z-index:4;box-shadow:0 4px 12px rgba(0,0,0,.2);max-width:736px;margin:auto}
@@ -202,6 +204,21 @@ window.appBack = () => {
   return false;
 };
 
+function avatar(u, cls=''){
+  const em = u.admin ? '👑' : u.role === 'trader' ? '🏭' : '🏪';
+  return u.photo ? `<img class="avt ${cls}" src="${u.photo}" alt="">` : `<div class="avt ${cls}">${em}</div>`;
+}
+function compressSquare(file, size=256, q=0.72){
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => { const im = new Image(); im.onload = () => {
+      const s = Math.min(im.width, im.height), c = document.createElement('canvas'); c.width = c.height = size;
+      const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0,0,size,size);
+      x.drawImage(im, (im.width - s)/2, (im.height - s)/2, s, s, 0, 0, size, size);
+      res(c.toDataURL('image/jpeg', q)); }; im.onerror = rej; im.src = r.result; };
+    r.onerror = rej; r.readAsDataURL(file);
+  });
+}
 function compress(file, max=480, q=0.6){
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -546,7 +563,7 @@ async function vAdmin(){
         ${DEL.length ? `<button class="btn big" id="showDel" style="margin:0 0 10px">♻️ المحذوفين (${DEL.length})</button>` : ''}
         <input class="search" id="usrch" placeholder="🔍 ابحث بالاسم أو الرقم">
         ${U.map(u => { const a = userActive(u); return `<div class="card urow" data-s="${esc(u.shop+' '+u.name+' '+u.phone)}">
-          <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span>${u.hidden ? '<span class="st" style="background:#6b7280">🙈 مخفي</span> ' : ''}${u.frozen ? '<span class="st" style="background:#2563eb">🧊 مجمّد</span>' : `<span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span>`}</span></div>
+          <div class="ohead"><b style="display:flex;gap:8px;align-items:center">${avatar(u,'sm')} ${esc(u.shop)}</b><span>${u.hidden ? '<span class="st" style="background:#6b7280">🙈 مخفي</span> ' : ''}${u.frozen ? '<span class="st" style="background:#2563eb">🧊 مجمّد</span>' : `<span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span>`}</span></div>
           <div class="muted small">${esc(u.name)} · ${esc(u.phone)}${u.subUntil && !u.admin ? ' · حتى '+fmtDay(u.subUntil) : ''}</div>
           ${u.admin ? '' : `<div class="grid2" style="grid-template-columns:repeat(4,1fr);margin-top:10px">${[[1,'+ شهر'],[3,'+ 3 شهور'],[6,'+ 6 شهور'],[12,'+ سنة']].map(([m,l]) => `<button class="btn small" data-ext="${u.id}" data-m="${m}">${l}</button>`).join('')}</div>
             <div class="row"><button class="btn small" data-date="${u.id}">📅 تعديل التاريخ</button><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>
@@ -738,7 +755,7 @@ async function vTraders(){
   if(S.tab!=='traders' || S.viewTrader) return;
   const T = S.me.admin ? S.traders.filter(t => !t.admin && !t.deleted) : S.traders.filter(t => userActive(t) && !t.hidden && !t.deleted);
   $('#tl').innerHTML = T.length ? T.map(t => `<div class="card tcard" data-t="${t.id}" data-s="${esc(t.shop+' '+t.name+' '+(t.area||''))}">
-      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div>${hoursLine(t)}</div>${S.me.admin ? `<span class="st" style="background:${t.frozen?'#2563eb':t.hidden?'#6b7280':userActive(t)?'#059669':'#dc2626'}">${t.frozen?'🧊 مجمّد':t.hidden?'🙈 مخفي':userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
+      ${avatar(t)}<div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div>${hoursLine(t)}</div>${S.me.admin ? `<span class="st" style="background:${t.frozen?'#2563eb':t.hidden?'#6b7280':userActive(t)?'#059669':'#dc2626'}">${t.frozen?'🧊 مجمّد':t.hidden?'🙈 مخفي':userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
     : emptyBox('🏭','ما في تجار جملة مسجلين بعد.<br>شارك التطبيق مع التجار اللي تتعامل معهم.');
   bindSearch('#srch', '.tcard');
   $$('.tcard').forEach(c => c.onclick = () => { S.viewTrader = T.find(t => t.id===c.dataset.t); render(); window.scrollTo(0,0); });
@@ -748,7 +765,7 @@ async function vTraderPage(){
   const t = S.viewTrader;
   setTitle(t.shop);
   app.innerHTML = `<button class="back" id="back">→ رجوع للتجار</button>
-  <div class="card"><b style="font-size:18px">${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div>${hoursLine(t, true)}
+  <div class="card"><div style="display:flex;gap:12px;align-items:center">${avatar(t)}<b style="font-size:18px">${esc(t.shop)}</b></div><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div>${hoursLine(t, true)}
     <div class="row"><button class="btn small" id="callT">📞 اتصال</button><button class="btn small" id="waT">💬 واتساب</button></div>
     ${S.me.admin ? `<div class="kv" id="tstats"><div><span>الاشتراك</span><b>${userActive(t) ? 'فعّال' : 'منتهي'}</b>${t.subUntil ? ' حتى '+fmtDay(t.subUntil) : ''}</div><div><span>الطلبيات</span><b>...</b></div></div>` : ''}</div>
   <input class="search" id="srch" placeholder="🔍 ابحث عن صنف"><div class="chips" id="chips"></div>
@@ -1152,7 +1169,9 @@ function deleteMyAccount(){
 function vAccount(){
   setTitle('حسابي');
   const m = S.me, isT = m.role === 'trader';
-  app.innerHTML = `<div class="card" style="text-align:center"><div style="font-size:50px">${m.admin ? '👑' : isT ? '🏭' : '🏪'}</div>
+  app.innerHTML = `<div class="card" style="text-align:center"><div id="myPhoto" style="cursor:pointer;position:relative;width:96px;margin:0 auto">${avatar(m,'big')}<span style="position:absolute;bottom:0;left:0;background:var(--p);color:#fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:15px">📷</span></div>
+      <input type="file" accept="image/*" id="photoFile" hidden>
+      ${m.photo ? '<button class="btn small" id="rmPhoto" style="background:none;color:var(--mu);margin-top:4px">إزالة الصورة</button>' : '<div class="muted small" style="margin-top:4px">اضغط لإضافة صورة</div>'}
       <b style="font-size:19px">${esc(m.shop)}</b><div class="muted">${m.admin ? 'مدير التطبيق' : isT ? 'تاجر جملة' : 'صاحب بقالة'} · ${esc(m.phone)}</div></div>
     ${m.admin ? '' : `<div class="card ohead" id="subCard" style="cursor:pointer">
       <div><b>💳 الاشتراك</b><div class="muted small">${isActive() ? `فعّال حتى ${fmtDay(m.subUntil)} · باقي ${daysLeft()} يوم` : 'منتهي'}</div></div>
@@ -1170,6 +1189,19 @@ function vAccount(){
       <button class="btn danger big" id="out">🚪 تسجيل خروج</button></div>
     ${m.admin ? '' : '<div style="text-align:center"><button class="btn small" id="delMe" style="background:none;color:var(--dan);text-decoration:underline">حذف حسابي نهائياً</button></div>'}
     <p class="muted small" style="text-align:center">تاجر جملة · نسخة 1.0</p>`;
+  $('#myPhoto').onclick = () => $('#photoFile').click();
+  $('#photoFile').onchange = async e => {
+    const f = e.target.files[0]; if(!f) return;
+    try {
+      const photo = await compressSquare(f);
+      updateDoc(doc(db,'users',m.id), { photo }).catch(err => toast('فشل حفظ الصورة: ' + err.code));
+      S.me.photo = photo; if(S.traders) S.traders = null; toast('تم تحديث الصورة ✅'); vAccount();
+    } catch(err){ toast('تعذّر قراءة الصورة'); }
+  };
+  if($('#rmPhoto')) twoTap($('#rmPhoto'), 'اضغط مرة ثانية للإزالة', () => {
+    updateDoc(doc(db,'users',m.id), { photo:'' }).catch(err => toast('فشل: ' + err.code));
+    S.me.photo = ''; if(S.traders) S.traders = null; toast('انشالت الصورة'); vAccount();
+  });
   if($('#subCard')) $('#subCard').onclick = () => { S.tab = 'subscribe'; render(); };
   $('#accf').onsubmit = async e => {
     e.preventDefault();
