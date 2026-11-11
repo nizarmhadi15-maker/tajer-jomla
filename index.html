@@ -224,6 +224,16 @@ function authErr(e){
   return 'صار خطأ: ' + c;
 }
 
+function showDeletedNotice(){
+  const sp = S.cfg.supportPhone;
+  setTimeout(() => {
+    openModal(`<div style="text-align:center"><div style="font-size:54px">⛔</div><h2>هذا الحساب محذوف</h2>
+      <p class="muted">تم حذف هذا الحساب من إدارة التطبيق، فما بتقدر تدخل عليه أو تسجّل بنفس الرقم.<br>إذا بدك ترجعه تواصل مع الإدارة.</p>
+      ${sp ? '<button class="btn primary big" id="supWa">💬 تواصل مع الإدارة</button>' : ''}</div>`);
+    if(sp) $('#supWa').onclick = () => whatsapp(sp, 'مرحبا، حسابي في تطبيق تاجر جملة انحذف وبدي أرجعه.');
+  }, 300);
+}
+
 // ---------- uniqueness helpers ----------
 function fixPhone(s){ let p = normPhone(s); if(p.startsWith('00')) p = p.slice(2); if(/^97[02]/.test(p)) p = '0' + p.slice(3); if(/^5\d{8}$/.test(p)) p = '0' + p; return p; }
 const cleanName = s => String(s || '').trim().replace(/\s+/g, ' ');
@@ -290,7 +300,15 @@ function renderAuth(mode='login'){
       } else {
         await signInWithEmailAndPassword(auth, phoneEmail(phone), f.get('pass'));
       }
-    } catch(err){ S.registering=false; btn.disabled=false; toast(authErr(err)); }
+    } catch(err){
+      S.registering = false; btn.disabled = false;
+      if(reg && String(err.code).includes('email-already-in-use')){
+        openModal(`<div style="text-align:center"><div style="font-size:54px">📱</div><h2>هذا الرقم مسجل من قبل</h2>
+          <p class="muted">إذا هذا رقمك، سجّل دخول بكلمة المرور تبعتك.<br>وإذا كان حسابك انحذف من الإدارة، تواصل معنا لاسترجاعه.</p>
+          <button class="btn primary big" id="goLogin">🔑 تسجيل دخول</button></div>`);
+        $('#goLogin').onclick = () => { closeModal(); renderAuth('login'); };
+      } else toast(authErr(err));
+    }
   };
 }
 
@@ -308,14 +326,14 @@ async function enter(user){
   try { const c = JSON.parse(localStorage.getItem('tj_cfg') || 'null'); if(c) S.cfg = { ...DEFAULT_CFG, ...c }; } catch(e){}
   const cfgP = loadCfg().then(() => { try { localStorage.setItem('tj_cfg', JSON.stringify(S.cfg)); } catch(e){} });
   if(cached){
-    if(cached.deleted){ try { localStorage.removeItem(meKey); } catch(e){} toast('⛔ تم حذف هذا الحساب من إدارة التطبيق'); await signOut(auth); return; }
+    if(cached.deleted){ try { localStorage.removeItem(meKey); } catch(e){} await cfgP; await signOut(auth); showDeletedNotice(); return; }
     S.me = { id:user.uid, ...cached };
   } else {
     app.innerHTML = '<div class="splash"><div class="slogo">🛒</div><b>تاجر جملة</b><div class="spin"></div></div>';
     let snap;
     try { snap = await getDoc(doc(db,'users',user.uid)); } catch(e){ app.innerHTML = emptyBox('📡','تعذّر الاتصال. تأكد من الإنترنت وأعد فتح التطبيق.'); return; }
     if(!snap.exists()){ toast('الحساب غير مكتمل، سجّل من جديد'); await signOut(auth); return; }
-    if(snap.data().deleted){ toast('⛔ تم حذف هذا الحساب من إدارة التطبيق'); await signOut(auth); return; }
+    if(snap.data().deleted){ await cfgP; await signOut(auth); showDeletedNotice(); return; }
     S.me = { id:user.uid, ...snap.data() };
     await cfgP;
   }
@@ -329,7 +347,7 @@ async function enter(user){
     if(!s.exists()){ if(!s.metadata.fromCache){ try { localStorage.removeItem(meKey); } catch(e){} toast('الحساب غير موجود، سجّل من جديد'); signOut(auth); } return; }
     const was = isActive(), oldAdmin = !!S.me.admin, oldFrozen = !!S.me.frozen;
     const d = s.data();
-    if(d.deleted){ try { localStorage.removeItem(meKey); } catch(e){} S.unsubs.forEach(u => u()); S.unsubs = []; toast('⛔ تم حذف هذا الحساب من إدارة التطبيق'); signOut(auth); return; }
+    if(d.deleted){ try { localStorage.removeItem(meKey); } catch(e){} S.unsubs.forEach(u => u()); S.unsubs = []; signOut(auth); showDeletedNotice(); return; }
     S.me = { id:user.uid, ...d };
     try { localStorage.setItem(meKey, JSON.stringify({ ...d, createdAt:null })); } catch(e){}
     if(was !== isActive()){ toast(isActive() ? '✅ تم تفعيل اشتراكك' : '⛔ انتهى اشتراكك'); render(); }
@@ -598,13 +616,14 @@ async function vAdmin(){
         <div class="row2"><div><label>اشتراك تاجر الجملة (₪/شهر)</label><input name="traderPrice" inputmode="decimal" value="${S.cfg.traderPrice}"></div>
         <div><label>اشتراك البقالة (₪/شهر)</label><input name="grocerPrice" inputmode="decimal" value="${S.cfg.grocerPrice}"></div></div>
         <label>أيام التجربة المجانية للحساب الجديد (أقصى شي 30)</label><input name="trialDays" inputmode="numeric" value="${S.cfg.trialDays}">
+        <label>رقم واتساب الإدارة (للتواصل)</label><input name="supportPhone" inputmode="tel" value="${esc(S.cfg.supportPhone || '')}" placeholder="059xxxxxxx">
         <label>معلومات الدفع (بتظهر للمشتركين)</label>
         <textarea name="payInfo" rows="4" placeholder="مثلاً:&#10;جوال باي: 059xxxxxxx&#10;بال باي: 059xxxxxxx&#10;بنك فلسطين: رقم الحساب ... باسم ...">${esc(S.cfg.payInfo)}</textarea>
         <button class="btn primary big">حفظ الإعدادات</button></form>`;
       $('#cfgf').onsubmit = async e => {
         e.preventDefault();
         const f = new FormData(e.target);
-        const c = { traderPrice:num(f.get('traderPrice')), grocerPrice:num(f.get('grocerPrice')), trialDays:Math.min(30, Math.max(0, Math.round(num(f.get('trialDays'))))), payInfo:f.get('payInfo').trim() };
+        const c = { traderPrice:num(f.get('traderPrice')), grocerPrice:num(f.get('grocerPrice')), trialDays:Math.min(30, Math.max(0, Math.round(num(f.get('trialDays'))))), payInfo:f.get('payInfo').trim(), supportPhone:fixPhone(f.get('supportPhone')) };
         try { await setDoc(doc(db,'config','app'), c, { merge:true }); S.cfg = { ...S.cfg, ...c }; toast('تم حفظ الإعدادات ✅'); }
         catch(err){ toast('فشل الحفظ: ' + err.code); }
       };
