@@ -224,6 +224,18 @@ function authErr(e){
   return 'صار خطأ: ' + c;
 }
 
+// ---------- uniqueness helpers ----------
+function fixPhone(s){ let p = normPhone(s); if(p.startsWith('00')) p = p.slice(2); if(/^97[02]/.test(p)) p = '0' + p.slice(3); if(/^5\d{8}$/.test(p)) p = '0' + p; return p; }
+const cleanName = s => String(s || '').trim().replace(/\s+/g, ' ');
+const nameKey = s => cleanName(s).replace(/[أإآٱ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/[ًٌٍَُِّْـ]/g,'').replace(/\s+/g,'').toLowerCase();
+async function shopTaken(shop, exceptId){
+  const [a, b] = await Promise.all([
+    getDocs(query(collection(db,'users'), where('shopKey','==',nameKey(shop)))),
+    getDocs(query(collection(db,'users'), where('shop','==',cleanName(shop))))
+  ]);
+  return [...a.docs, ...b.docs].some(d => d.id !== exceptId);
+}
+
 // ---------- auth ----------
 function renderAuth(mode='login'){
   $('#topbar').classList.add('hidden'); $('#tabs').classList.add('hidden');
@@ -247,15 +259,22 @@ function renderAuth(mode='login'){
   $('#af').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target), btn = $('#af button[type=submit]');
-    const phone = normPhone(f.get('phone'));
-    if(phone.length < 9) return toast('رقم الجوال غير صحيح');
+    const phone = fixPhone(f.get('phone'));
+    if(!/^05\d{8}$/.test(phone)) return toast('رقم الجوال لازم يكون 10 أرقام ويبدأ بـ 05، مثل 0599123456');
+    const shop = reg ? cleanName(f.get('shop')) : '';
+    if(reg && shop.length < 2) return toast('اكتب اسم المحل');
     btn.disabled = true;
     try {
       if(reg){
         S.registering = true;
         const cred = await createUserWithEmailAndPassword(auth, phoneEmail(phone), f.get('pass'));
+        if(await shopTaken(shop)){
+          try { await deleteUser(cred.user); } catch(e){ await signOut(auth); }
+          S.registering = false; btn.disabled = false;
+          return toast('❌ اسم المحل "' + shop + '" موجود من قبل، اختار اسم ثاني');
+        }
         await loadCfg();
-        await setDoc(doc(db,'users',cred.user.uid), { role:f.get('role'), name:f.get('name').trim(), shop:f.get('shop').trim(), area:(f.get('area')||'').trim(), phone, subUntil: Date.now() + Math.min(30, S.cfg.trialDays) * DAY, createdAt:serverTimestamp() });
+        await setDoc(doc(db,'users',cred.user.uid), { role:f.get('role'), name:cleanName(f.get('name')), shop, shopKey:nameKey(shop), area:(f.get('area')||'').trim(), phone, subUntil: Date.now() + Math.min(30, S.cfg.trialDays) * DAY, createdAt:serverTimestamp() });
         S.registering = false;
         await enter(cred.user);
       } else {
@@ -893,11 +912,11 @@ function deleteMyAccount(){
 function vAccount(){
   setTitle('حسابي');
   const m = S.me, isT = m.role === 'trader';
-  app.innerHTML = `<div class="card" style="text-align:center"><div style="font-size:50px">${isT ? '🏭' : '🏪'}</div>
-      <b style="font-size:19px">${esc(m.shop)}</b><div class="muted">${isT ? 'تاجر جملة' : 'صاحب بقالة'} · ${esc(m.phone)}</div></div>
-    <div class="card ohead" id="subCard" style="cursor:pointer">
-      <div><b>💳 الاشتراك</b><div class="muted small">${m.admin ? 'حساب إدارة' : (isActive() ? `فعّال حتى ${fmtDay(m.subUntil)} · باقي ${daysLeft()} يوم` : 'منتهي')}</div></div>
-      <span class="btn small ${isActive() ? '' : 'primary'}">${isActive() ? 'تجديد' : 'جدّد الآن'}</span></div>
+  app.innerHTML = `<div class="card" style="text-align:center"><div style="font-size:50px">${m.admin ? '👑' : isT ? '🏭' : '🏪'}</div>
+      <b style="font-size:19px">${esc(m.shop)}</b><div class="muted">${m.admin ? 'مدير التطبيق' : isT ? 'تاجر جملة' : 'صاحب بقالة'} · ${esc(m.phone)}</div></div>
+    ${m.admin ? '' : `<div class="card ohead" id="subCard" style="cursor:pointer">
+      <div><b>💳 الاشتراك</b><div class="muted small">${isActive() ? `فعّال حتى ${fmtDay(m.subUntil)} · باقي ${daysLeft()} يوم` : 'منتهي'}</div></div>
+      <span class="btn small ${isActive() ? '' : 'primary'}">${isActive() ? 'تجديد' : 'جدّد الآن'}</span></div>`}
     <form id="accf" class="card">
       <label>اسمك</label><input name="name" value="${esc(m.name)}" required>
       <label>اسم المحل / المخزن</label><input name="shop" value="${esc(m.shop)}" required>
@@ -907,10 +926,16 @@ function vAccount(){
       <button class="btn danger big" id="out">🚪 تسجيل خروج</button></div>
     ${m.admin ? '' : '<div style="text-align:center"><button class="btn small" id="delMe" style="background:none;color:var(--dan);text-decoration:underline">حذف حسابي نهائياً</button></div>'}
     <p class="muted small" style="text-align:center">تاجر جملة · نسخة 1.0</p>`;
-  $('#subCard').onclick = () => { S.tab = 'subscribe'; render(); };
-  $('#accf').onsubmit = e => {
+  if($('#subCard')) $('#subCard').onclick = () => { S.tab = 'subscribe'; render(); };
+  $('#accf').onsubmit = async e => {
     e.preventDefault();
-    const f = new FormData(e.target), d = { name:f.get('name').trim(), shop:f.get('shop').trim(), area:f.get('area').trim() };
+    const f = new FormData(e.target), d = { name:cleanName(f.get('name')), shop:cleanName(f.get('shop')), area:f.get('area').trim() };
+    d.shopKey = nameKey(d.shop);
+    if(d.shop.length < 2) return toast('اكتب اسم المحل');
+    if(d.shopKey !== nameKey(m.shop || '')){
+      try { if(await shopTaken(d.shop, m.id)) return toast('❌ اسم المحل "' + d.shop + '" موجود من قبل، اختار اسم ثاني'); }
+      catch(err){ return toast('تعذّر التحقق من الاسم، تأكد من الإنترنت'); }
+    }
     updateDoc(doc(db,'users',m.id), d).catch(err => toast('فشل الحفظ: ' + err.code));
     Object.assign(S.me, d); toast('تم الحفظ ✅'); vAccount();
   };
