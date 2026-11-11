@@ -130,7 +130,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--p2);border-color
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, getFirestore, persistentLocalCache, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, collection, query, where, getDocs, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, getFirestore, persistentLocalCache, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, collection, query, where, getDocs, onSnapshot, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTayav6FAQ5LnaFLnOqFkFLXuLBJ5YidA",
@@ -150,6 +150,16 @@ try { db = initializeFirestore(fb, { localCache: persistentLocalCache() }); } ca
 // ---------- helpers ----------
 const S = { me:null, tab:null, products:[], orders:[], traders:null, viewTrader:null, viewProducts:[], unsubs:[], registering:false, ofilter:'all', firstOrders:true };
 const STATUS = { new:['جديدة','#2563eb'], preparing:['قيد التجهيز','#d97706'], ready:['جاهزة للاستلام','#059669'], done:['تم التسليم','#6b7280'], cancelled:['ملغاة','#dc2626'] };
+const DAY = 86400000;
+const DEFAULT_CFG = { traderPrice:50, grocerPrice:20, trialDays:14, payInfo:'' };
+S.cfg = { ...DEFAULT_CFG };
+S.atab = 'pays';
+const isActive = () => !!S.me && (S.me.admin === true || (S.me.subUntil || 0) > Date.now());
+const daysLeft = () => Math.max(0, Math.ceil(((S.me?.subUntil || 0) - Date.now()) / DAY));
+const userActive = u => u.admin === true || (u.subUntil || 0) > Date.now();
+const fmtDay = ms => new Date(ms).toLocaleDateString('ar-u-nu-latn', { year:'numeric', month:'short', day:'numeric' });
+const priceFor = role => role === 'trader' ? S.cfg.traderPrice : S.cfg.grocerPrice;
+async function loadCfg(){ try { const c = await getDoc(doc(db,'config','app')); if(c.exists()) S.cfg = { ...DEFAULT_CFG, ...c.data() }; } catch(e){} }
 const UNITS = ['كرتونة','حبة','كيس','شوال','ربطة','كيلو','علبة','درزن','باكيت','جالون'];
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -233,7 +243,8 @@ function renderAuth(mode='login'){
       if(reg){
         S.registering = true;
         const cred = await createUserWithEmailAndPassword(auth, phoneEmail(phone), f.get('pass'));
-        await setDoc(doc(db,'users',cred.user.uid), { role:f.get('role'), name:f.get('name').trim(), shop:f.get('shop').trim(), area:(f.get('area')||'').trim(), phone, createdAt:serverTimestamp() });
+        await loadCfg();
+        await setDoc(doc(db,'users',cred.user.uid), { role:f.get('role'), name:f.get('name').trim(), shop:f.get('shop').trim(), area:(f.get('area')||'').trim(), phone, subUntil: Date.now() + Math.min(30, S.cfg.trialDays) * DAY, createdAt:serverTimestamp() });
         S.registering = false;
         await enter(cred.user);
       } else {
@@ -256,6 +267,18 @@ async function enter(user){
   try { snap = await getDoc(doc(db,'users',user.uid)); } catch(e){ app.innerHTML = emptyBox('📡','تعذّر الاتصال. تأكد من الإنترنت وأعد فتح التطبيق.'); return; }
   if(!snap.exists()){ toast('الحساب غير مكتمل، سجّل من جديد'); await signOut(auth); return; }
   S.me = { id:user.uid, ...snap.data() };
+  await loadCfg();
+  if(!S.me.admin && S.me.subUntil == null){
+    const until = Date.now() + Math.min(30, S.cfg.trialDays) * DAY;
+    S.me.subUntil = until;
+    updateDoc(doc(db,'users',user.uid), { subUntil:until }).catch(() => {});
+  }
+  S.unsubs.push(onSnapshot(doc(db,'users',user.uid), s => {
+    if(!s.exists() || !S.me) return;
+    const was = isActive();
+    S.me = { id:user.uid, ...s.data() };
+    if(was !== isActive()){ toast(isActive() ? '✅ تم تفعيل اشتراكك' : '⛔ انتهى اشتراكك'); render(); }
+  }));
   S.tab = S.me.role === 'trader' ? 'products' : 'traders';
   S.firstOrders = true; S.traders = null; S.viewTrader = null;
   $('#topbar').classList.remove('hidden'); $('#tabs').classList.remove('hidden');
@@ -290,18 +313,144 @@ function badge(k){
 }
 function renderTabs(){
   const nav = $('#tabs');
-  nav.innerHTML = TABS[S.me.role].map(([k,i,l]) => `<button class="${S.tab===k?'on':''}" data-tab="${k}"><span>${i}</span>${l}${badge(k)}</button>`).join('');
+  const tabs = S.me.admin ? [...TABS[S.me.role], ['admin','⚙️','الإدارة']] : TABS[S.me.role];
+  nav.innerHTML = tabs.map(([k,i,l]) => `<button class="${S.tab===k?'on':''}" data-tab="${k}"><span>${i}</span>${l}${badge(k)}</button>`).join('');
   $$('button', nav).forEach(b => b.onclick = () => { if(S.tab===b.dataset.tab && b.dataset.tab==='traders') S.viewTrader=null; S.tab=b.dataset.tab; render(); window.scrollTo(0,0); });
 }
 function render(){
   if(!S.me) return;
   renderTabs();
   const t = S.tab;
+  if(!isActive() && ['products','traders','cart'].includes(t)) return vSubscribe();
   if(t==='products') vProducts();
   else if(t==='orders') vOrders();
   else if(t==='account') vAccount();
   else if(t==='cart') vCart();
+  else if(t==='subscribe') vSubscribe();
+  else if(t==='admin') vAdmin();
   else if(t==='traders') S.viewTrader ? vTraderPage() : vTraders();
+  if(!S.me.admin && isActive() && daysLeft() <= 3 && ['products','traders','cart','orders'].includes(t)){
+    app.insertAdjacentHTML('afterbegin', `<div class="card" id="subWarn" style="background:#fffbeb;cursor:pointer">⏳ اشتراكك بينتهي بعد <b>${daysLeft()}</b> يوم. اضغط هون للتجديد ‹</div>`);
+    $('#subWarn').onclick = () => { S.tab='subscribe'; render(); };
+  }
+}
+
+// ---------- subscription ----------
+async function vSubscribe(){
+  setTitle('الاشتراك');
+  const role = S.me.role, price = priceFor(role), act = isActive();
+  app.innerHTML = `<div class="card" style="text-align:center">
+    ${act ? `<div style="font-size:46px">✅</div><b style="font-size:18px">اشتراكك فعّال</b>
+      <div class="muted">${S.me.admin ? 'حساب إدارة، بدون اشتراك' : `ينتهي ${fmtDay(S.me.subUntil)} · باقي ${daysLeft()} يوم`}</div>`
+    : `<div style="font-size:46px">⛔</div><b style="font-size:18px">اشتراكك منتهي</b>
+      <div class="muted">جدّد الاشتراك عشان ${role==='trader' ? 'تعدّل بضاعتك وتظهر للبقالات وتستقبل طلبيات جديدة' : 'تكمّل تطلب بضاعتك من التجار'}</div>`}</div>
+  <form id="payf" class="card"><b style="font-size:17px">💳 تجديد الاشتراك</b>
+    <div class="muted small">${role==='trader' ? 'اشتراك تاجر جملة' : 'اشتراك بقالة'}: ${money(price)} بالشهر</div>
+    <label>المدة</label>
+    <div class="roles" style="flex-wrap:wrap">${[1,3,6,12].map(m => `<label class="role" style="min-width:22%"><input type="radio" name="months" value="${m}" ${m===1?'checked':''}><span>${m} ${m===1?'شهر':(m<=10?'شهور':'شهر')}<br><small>${money(m*price)}</small></span></label>`).join('')}</div>
+    <div class="card" style="background:#f0fdfa;white-space:pre-line;margin:12px 0 0">📌 حوّل المبلغ على:\n${esc(S.cfg.payInfo || 'لسا ما انضافت أرقام الدفع، تواصل مع الإدارة')}</div>
+    <label>دفعت عن طريق</label><select name="method"><option>جوال باي</option><option>بال باي</option><option>بنك فلسطين</option></select>
+    <label>رقم العملية / الحركة</label><input name="ref" placeholder="من رسالة التحويل" required>
+    <button class="btn primary big" type="submit">📨 أرسلت المبلغ، فعّلوا اشتراكي</button></form>
+  <div id="mypays"></div>`;
+  $('#payf').onsubmit = e => {
+    e.preventDefault();
+    const f = new FormData(e.target), months = Number(f.get('months'));
+    const p = { uid:S.me.id, shop:S.me.shop, name:S.me.name, phone:S.me.phone, role, months, amount:months*price, method:f.get('method'), ref:f.get('ref').trim(), status:'pending', createdAt:serverTimestamp() };
+    addDoc(collection(db,'payments'), p).catch(err => toast('فشل الإرسال: ' + err.code));
+    toast('✅ وصل طلبك، رح يتفعّل اشتراكك بعد التأكد من الدفع');
+    setTimeout(vSubscribe, 600);
+  };
+  try {
+    const snap = await getDocs(query(collection(db,'payments'), where('uid','==',S.me.id)));
+    const P = snap.docs.map(d => d.data()).sort((a,b) => tsMs(b.createdAt) - tsMs(a.createdAt));
+    const PS = { pending:['قيد المراجعة','#d97706'], approved:['تم التفعيل','#059669'], rejected:['مرفوض','#dc2626'] };
+    if(P.length && $('#mypays')) $('#mypays').innerHTML = `<b>طلبات الدفع السابقة</b>` + P.map(p => `<div class="card ohead" style="margin-top:8px">
+      <div><b>${p.months} ${p.months===1?'شهر':'شهور'} · ${money(p.amount)}</b><div class="muted small">${fmtDate(p.createdAt)} · ${esc(p.method)}</div></div>
+      <span class="st" style="background:${PS[p.status]?.[1]}">${PS[p.status]?.[0]}</span></div>`).join('');
+  } catch(e){}
+}
+
+// ---------- admin ----------
+async function vAdmin(){
+  setTitle('لوحة الإدارة');
+  const A = S.atab;
+  app.innerHTML = `<div class="seg" style="margin:0 0 12px">${[['pays','💳 طلبات الدفع'],['users','👥 المشتركين'],['settings','⚙️ الإعدادات']].map(([k,l]) => `<button class="${A===k?'on':''}" data-a="${k}">${l}</button>`).join('')}</div><div id="adm"><div class="loading">⏳ جاري التحميل...</div></div>`;
+  $$('[data-a]').forEach(b => b.onclick = () => { S.atab = b.dataset.a; vAdmin(); });
+  const box = $('#adm');
+  try {
+    if(A === 'pays'){
+      const snap = await getDocs(query(collection(db,'payments'), where('status','==','pending')));
+      const P = snap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => tsMs(a.createdAt) - tsMs(b.createdAt));
+      box.innerHTML = P.length ? P.map(p => `<div class="card" data-pay="${p.id}">
+        <div class="ohead"><b>${esc(p.shop)}</b><span class="st" style="background:${p.role==='trader'?'#7c3aed':'#0f766e'}">${p.role==='trader'?'تاجر جملة':'بقالة'}</span></div>
+        <div class="kv"><div><span>المبلغ</span><b>${money(p.amount)}</b></div><div><span>المدة</span>${p.months} ${p.months===1?'شهر':'شهور'}</div>
+        <div><span>الطريقة</span>${esc(p.method)}</div><div><span>رقم العملية</span><b>${esc(p.ref)}</b></div>
+        <div><span>الجوال</span>${esc(p.phone)}</div><div><span>التاريخ</span>${fmtDate(p.createdAt)}</div></div>
+        <div class="grid2"><button class="btn primary" data-ok="${p.id}">✅ تفعيل</button><button class="btn" style="color:var(--dan)" data-no="${p.id}">❌ رفض</button></div></div>`).join('')
+        : emptyBox('💳','ما في طلبات دفع جديدة.');
+      $$('[data-ok]').forEach(b => b.onclick = async () => {
+        const p = P.find(x => x.id===b.dataset.ok); b.disabled = true;
+        try {
+          const u = await getDoc(doc(db,'users',p.uid));
+          const until = Math.max(Date.now(), u.data()?.subUntil || 0) + p.months * 30 * DAY;
+          const bt = writeBatch(db);
+          bt.update(doc(db,'users',p.uid), { subUntil:until });
+          bt.update(doc(db,'payments',p.id), { status:'approved', newUntil:until, decidedAt:serverTimestamp() });
+          await bt.commit();
+          toast('✅ تم التفعيل حتى ' + fmtDay(until));
+          openModal(`<div style="text-align:center"><div style="font-size:50px">✅</div><h2>تم تفعيل ${esc(p.shop)}</h2><p class="muted">حتى ${fmtDay(until)}</p>
+            <button class="btn primary big" id="waOk">💬 بلّغه على واتساب</button></div>`);
+          $('#waOk').onclick = () => whatsapp(p.phone, `مرحبا ${p.name}، تم تفعيل اشتراكك في تطبيق تاجر جملة حتى ${fmtDay(until)}. شكراً إلك 🌹`);
+          vAdmin();
+        } catch(err){ b.disabled = false; toast('فشل التفعيل: ' + err.code); }
+      });
+      $$('[data-no]').forEach(b => twoTap(b, 'اضغط للتأكيد', async () => {
+        try { await updateDoc(doc(db,'payments',b.dataset.no), { status:'rejected', decidedAt:serverTimestamp() }); toast('تم الرفض'); vAdmin(); }
+        catch(err){ toast('فشل: ' + err.code); }
+      }));
+    }
+    else if(A === 'users'){
+      const snap = await getDocs(collection(db,'users'));
+      const U = snap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => (a.subUntil||0) - (b.subUntil||0));
+      const paid = U.filter(u => !u.admin);
+      const at = paid.filter(u => u.role==='trader' && userActive(u)).length, ag = paid.filter(u => u.role==='grocer' && userActive(u)).length;
+      box.innerHTML = `<div class="kv" style="margin-top:0">
+          <div><span>تجار جملة</span><b>${paid.filter(u=>u.role==='trader').length}</b> (فعّال ${at})</div>
+          <div><span>بقالات</span><b>${paid.filter(u=>u.role==='grocer').length}</b> (فعّال ${ag})</div>
+          <div style="grid-column:1/-1"><span>الدخل الشهري المتوقع من الفعّالين (بما فيهم التجربة)</span><b>${money(at*S.cfg.traderPrice + ag*S.cfg.grocerPrice)}</b></div></div>
+        <input class="search" id="usrch" placeholder="🔍 ابحث بالاسم أو الرقم">
+        ${U.map(u => { const a = userActive(u); return `<div class="card urow" data-s="${esc(u.shop+' '+u.name+' '+u.phone)}">
+          <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span></div>
+          <div class="muted small">${esc(u.name)} · ${esc(u.phone)}${u.subUntil && !u.admin ? ' · حتى '+fmtDay(u.subUntil) : ''}</div>
+          ${u.admin ? '' : `<div class="row"><button class="btn small" data-ext="${u.id}">+ شهر</button><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>`}</div>`; }).join('')}`;
+      bindSearch('#usrch', '.urow');
+      $$('[data-ext]').forEach(b => b.onclick = async () => {
+        const u = U.find(x => x.id===b.dataset.ext);
+        const until = Math.max(Date.now(), u.subUntil || 0) + 30 * DAY;
+        b.disabled = true;
+        try { await updateDoc(doc(db,'users',u.id), { subUntil:until }); toast(`تم تمديد ${u.shop} حتى ${fmtDay(until)}`); vAdmin(); }
+        catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+      });
+      $$('[data-wa]').forEach(b => b.onclick = () => { const u = U.find(x => x.id===b.dataset.wa); whatsapp(u.phone, `مرحبا ${u.name}، معك إدارة تطبيق تاجر جملة.`); });
+    }
+    else {
+      box.innerHTML = `<form id="cfgf" class="card">
+        <div class="row2"><div><label>اشتراك تاجر الجملة (₪/شهر)</label><input name="traderPrice" inputmode="decimal" value="${S.cfg.traderPrice}"></div>
+        <div><label>اشتراك البقالة (₪/شهر)</label><input name="grocerPrice" inputmode="decimal" value="${S.cfg.grocerPrice}"></div></div>
+        <label>أيام التجربة المجانية للحساب الجديد (أقصى شي 30)</label><input name="trialDays" inputmode="numeric" value="${S.cfg.trialDays}">
+        <label>معلومات الدفع (بتظهر للمشتركين)</label>
+        <textarea name="payInfo" rows="4" placeholder="مثلاً:&#10;جوال باي: 059xxxxxxx&#10;بال باي: 059xxxxxxx&#10;بنك فلسطين: رقم الحساب ... باسم ...">${esc(S.cfg.payInfo)}</textarea>
+        <button class="btn primary big">حفظ الإعدادات</button></form>`;
+      $('#cfgf').onsubmit = async e => {
+        e.preventDefault();
+        const f = new FormData(e.target);
+        const c = { traderPrice:num(f.get('traderPrice')), grocerPrice:num(f.get('grocerPrice')), trialDays:Math.min(30, Math.max(0, Math.round(num(f.get('trialDays'))))), payInfo:f.get('payInfo').trim() };
+        try { await setDoc(doc(db,'config','app'), c, { merge:true }); S.cfg = { ...S.cfg, ...c }; toast('تم حفظ الإعدادات ✅'); }
+        catch(err){ toast('فشل الحفظ: ' + err.code); }
+      };
+    }
+  } catch(e){ box.innerHTML = emptyBox('⚠️', 'تعذّر التحميل: ' + (e.code || e.message)); }
 }
 function bindSearch(inputSel, itemSel){
   const inp = $(inputSel); if(!inp) return;
@@ -372,7 +521,7 @@ async function vTraders(){
     } catch(e){ $('#tl').innerHTML = emptyBox('📡','تعذّر تحميل التجار. تأكد من الإنترنت.'); return; }
   }
   if(S.tab!=='traders' || S.viewTrader) return;
-  const T = S.traders;
+  const T = S.traders.filter(userActive);
   $('#tl').innerHTML = T.length ? T.map(t => `<div class="card tcard" data-t="${t.id}" data-s="${esc(t.shop+' '+t.name+' '+(t.area||''))}">
       <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div></div><span class="muted">‹</span></div>`).join('')
     : emptyBox('🏭','ما في تجار جملة مسجلين بعد.<br>شارك التطبيق مع التجار اللي تتعامل معهم.');
@@ -592,6 +741,9 @@ function vAccount(){
   const m = S.me, isT = m.role === 'trader';
   app.innerHTML = `<div class="card" style="text-align:center"><div style="font-size:50px">${isT ? '🏭' : '🏪'}</div>
       <b style="font-size:19px">${esc(m.shop)}</b><div class="muted">${isT ? 'تاجر جملة' : 'صاحب بقالة'} · ${esc(m.phone)}</div></div>
+    <div class="card ohead" id="subCard" style="cursor:pointer">
+      <div><b>💳 الاشتراك</b><div class="muted small">${m.admin ? 'حساب إدارة' : (isActive() ? `فعّال حتى ${fmtDay(m.subUntil)} · باقي ${daysLeft()} يوم` : 'منتهي')}</div></div>
+      <span class="btn small ${isActive() ? '' : 'primary'}">${isActive() ? 'تجديد' : 'جدّد الآن'}</span></div>
     <form id="accf" class="card">
       <label>اسمك</label><input name="name" value="${esc(m.name)}" required>
       <label>اسم المحل / المخزن</label><input name="shop" value="${esc(m.shop)}" required>
@@ -600,6 +752,7 @@ function vAccount(){
     <div class="card"><button class="btn big" id="share" style="margin-top:0">📲 شارك التطبيق على واتساب</button>
       <button class="btn danger big" id="out">🚪 تسجيل خروج</button></div>
     <p class="muted small" style="text-align:center">تاجر جملة · نسخة 1.0</p>`;
+  $('#subCard').onclick = () => { S.tab = 'subscribe'; render(); };
   $('#accf').onsubmit = e => {
     e.preventDefault();
     const f = new FormData(e.target), d = { name:f.get('name').trim(), shop:f.get('shop').trim(), area:f.get('area').trim() };
