@@ -139,7 +139,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--p2);border-color
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, deleteUser, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, collection, query, where, getDocs, onSnapshot, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -167,7 +167,7 @@ S.atab = 'pays';
 const monthsDays = m => m === 12 ? 365 : m * 30;
 const isActive = () => !!S.me && (S.me.admin === true || (S.me.subUntil || 0) > Date.now());
 const daysLeft = () => Math.max(0, Math.ceil(((S.me?.subUntil || 0) - Date.now()) / DAY));
-const userActive = u => u.admin === true || (u.subUntil || 0) > Date.now();
+const userActive = u => u.admin === true || (!u.frozen && (u.subUntil || 0) > Date.now());
 const fmtDay = ms => new Date(ms).toLocaleDateString('ar-u-nu-latn', { year:'numeric', month:'short', day:'numeric' });
 const priceFor = role => role === 'trader' ? S.cfg.traderPrice : S.cfg.grocerPrice;
 async function loadCfg(){ try { const c = await getDoc(doc(db,'config','app')); if(c.exists()) S.cfg = { ...DEFAULT_CFG, ...c.data() }; } catch(e){} }
@@ -294,14 +294,14 @@ async function enter(user){
     updateDoc(doc(db,'users',user.uid), { subUntil:until }).catch(() => {});
   }
   S.unsubs.push(onSnapshot(doc(db,'users',user.uid), s => {
-    if(!S.me) return;
+    if(!S.me || S.deleting) return;
     if(!s.exists()){ if(!s.metadata.fromCache){ try { localStorage.removeItem(meKey); } catch(e){} toast('الحساب غير موجود، سجّل من جديد'); signOut(auth); } return; }
-    const was = isActive(), oldAdmin = !!S.me.admin;
+    const was = isActive(), oldAdmin = !!S.me.admin, oldFrozen = !!S.me.frozen;
     const d = s.data();
     S.me = { id:user.uid, ...d };
     try { localStorage.setItem(meKey, JSON.stringify({ ...d, createdAt:null })); } catch(e){}
     if(was !== isActive()){ toast(isActive() ? '✅ تم تفعيل اشتراكك' : '⛔ انتهى اشتراكك'); render(); }
-    else if(oldAdmin !== !!S.me.admin) render();
+    else if(oldAdmin !== !!S.me.admin || oldFrozen !== !!S.me.frozen) render();
   }));
   S.tab = S.me.admin ? 'traders' : (S.me.role === 'trader' ? 'products' : 'traders');
   S.firstOrders = true; S.traders = null; S.viewTrader = null;
@@ -344,6 +344,8 @@ function renderTabs(){
 }
 function render(){
   if(!S.me) return;
+  if(S.me.frozen && !S.me.admin) return vFrozen();
+  $('#tabs').classList.remove('hidden');
   renderTabs();
   const t = S.tab;
   if(!isActive() && ['products','traders','cart'].includes(t)) return vSubscribe();
@@ -358,6 +360,15 @@ function render(){
     app.insertAdjacentHTML('afterbegin', `<div class="card" id="subWarn" style="background:#fffbeb;cursor:pointer">⏳ اشتراكك بينتهي بعد <b>${daysLeft()}</b> يوم. اضغط هون للتجديد ‹</div>`);
     $('#subWarn').onclick = () => { S.tab='subscribe'; render(); };
   }
+}
+
+function vFrozen(){
+  setTitle('تاجر جملة');
+  $('#tabs').classList.add('hidden');
+  app.innerHTML = `<div class="card" style="text-align:center;margin-top:30px"><div style="font-size:60px">🧊</div>
+    <h2>حسابك مجمّد</h2><p class="muted">تم تجميد حسابك مؤقتاً من إدارة التطبيق.<br>للاستفسار تواصل مع الإدارة.</p>
+    <button class="btn danger big" id="frzOut">🚪 تسجيل خروج</button></div>`;
+  $('#frzOut').onclick = () => signOut(auth);
 }
 
 // ---------- subscription ----------
@@ -446,10 +457,11 @@ async function vAdmin(){
           <div style="grid-column:1/-1"><span>الدخل الشهري المتوقع من الفعّالين (بما فيهم التجربة)</span><b>${money(at*S.cfg.traderPrice + ag*S.cfg.grocerPrice)}</b></div></div>
         <input class="search" id="usrch" placeholder="🔍 ابحث بالاسم أو الرقم">
         ${U.map(u => { const a = userActive(u); return `<div class="card urow" data-s="${esc(u.shop+' '+u.name+' '+u.phone)}">
-          <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span></div>
+          <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span>${u.hidden ? '<span class="st" style="background:#6b7280">🙈 مخفي</span> ' : ''}${u.frozen ? '<span class="st" style="background:#2563eb">🧊 مجمّد</span>' : `<span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span>`}</span></div>
           <div class="muted small">${esc(u.name)} · ${esc(u.phone)}${u.subUntil && !u.admin ? ' · حتى '+fmtDay(u.subUntil) : ''}</div>
           ${u.admin ? '' : `<div class="grid2" style="grid-template-columns:repeat(4,1fr);margin-top:10px">${[[1,'+ شهر'],[3,'+ 3 شهور'],[6,'+ 6 شهور'],[12,'+ سنة']].map(([m,l]) => `<button class="btn small" data-ext="${u.id}" data-m="${m}">${l}</button>`).join('')}</div>
-            <div class="row"><button class="btn small" data-date="${u.id}">📅 تعديل التاريخ</button><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>`}</div>`; }).join('')}`;
+            <div class="row"><button class="btn small" data-date="${u.id}">📅 تعديل التاريخ</button><button class="btn small" data-wa="${u.id}">💬 واتساب</button></div>
+            <div class="row"><button class="btn small" data-frz="${u.id}">${u.frozen ? '✅ فك التجميد' : '🧊 تجميد'}</button>${u.role==='trader' ? `<button class="btn small" data-hide="${u.id}">${u.hidden ? '👁️ إظهار' : '🙈 إخفاء'}</button>` : ''}<button class="btn small" style="color:var(--dan)" data-del="${u.id}">🗑️ حذف</button></div>`}</div>`; }).join('')}`;
       bindSearch('#usrch', '.urow');
       $$('[data-ext]').forEach(b => {
         const u = U.find(x => x.id===b.dataset.ext), m = Number(b.dataset.m);
@@ -464,6 +476,39 @@ async function vAdmin(){
             $('#waExt').onclick = () => whatsapp(u.phone, `مرحبا ${u.name}، تم تفعيل اشتراكك في تطبيق تاجر جملة حتى ${fmtDay(until)}. شكراً إلك 🌹`);
             vAdmin();
           } catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+        });
+      });
+      $$('[data-frz]').forEach(b => {
+        const u = U.find(x => x.id===b.dataset.frz), on = !u.frozen;
+        twoTap(b, on ? 'تأكيد التجميد؟' : 'تأكيد فك التجميد؟', async () => {
+          b.disabled = true;
+          try { await updateDoc(doc(db,'users',u.id), { frozen:on }); if(S.traders) S.traders = null; toast(on ? `🧊 تم تجميد ${u.shop}` : `✅ تم فك تجميد ${u.shop}`); vAdmin(); }
+          catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+        });
+      });
+      $$('[data-hide]').forEach(b => {
+        const u = U.find(x => x.id===b.dataset.hide), on = !u.hidden;
+        twoTap(b, on ? 'تأكيد الإخفاء؟' : 'تأكيد الإظهار؟', async () => {
+          b.disabled = true;
+          try { await updateDoc(doc(db,'users',u.id), { hidden:on }); if(S.traders) S.traders = null; toast(on ? `🙈 ${u.shop} صار مخفي عن البقالات` : `👁️ ${u.shop} رجع يظهر للبقالات`); vAdmin(); }
+          catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+        });
+      });
+      $$('[data-del]').forEach(b => b.onclick = () => {
+        const u = U.find(x => x.id===b.dataset.del);
+        openModal(`<div style="text-align:center"><div style="font-size:50px">🗑️</div><h2>حذف ${esc(u.shop)}؟</h2>
+          <p class="muted">${u.role==='trader' ? 'رح ينحذف الحساب وكل بضاعته، ويختفي من قائمة التجار.' : 'رح ينحذف حساب البقالة.'}<br>الطلبيات القديمة بتضل محفوظة. وما بيقدر يدخل على التطبيق بعدها.</p>
+          <button class="btn danger big" id="delGo">🗑️ تأكيد الحذف نهائياً</button><button class="btn big" id="delNo">إلغاء</button></div>`);
+        $('#delNo').onclick = closeModal;
+        twoTap($('#delGo'), 'متأكد؟ اضغط مرة ثانية', async () => {
+          $('#delGo').disabled = true;
+          try {
+            const ps = await getDocs(query(collection(db,'products'), where('traderId','==',u.id)));
+            const docs = [...ps.docs.map(d => d.ref), doc(db,'users',u.id)];
+            for(let i = 0; i < docs.length; i += 400){ const bt = writeBatch(db); docs.slice(i, i+400).forEach(r => bt.delete(r)); await bt.commit(); }
+            if(S.traders) S.traders = S.traders.filter(t => t.id !== u.id);
+            closeModal(); toast(`تم حذف ${u.shop}`); vAdmin();
+          } catch(err){ toast('فشل الحذف: ' + err.code); if($('#delGo')) $('#delGo').disabled = false; }
         });
       });
       $$('[data-date]').forEach(b => b.onclick = () => {
@@ -576,9 +621,9 @@ async function vTraders(){
     } catch(e){ $('#tl').innerHTML = emptyBox('📡','تعذّر تحميل التجار. تأكد من الإنترنت.'); return; }
   }
   if(S.tab!=='traders' || S.viewTrader) return;
-  const T = S.me.admin ? S.traders.filter(t => !t.admin) : S.traders.filter(userActive);
+  const T = S.me.admin ? S.traders.filter(t => !t.admin) : S.traders.filter(t => userActive(t) && !t.hidden);
   $('#tl').innerHTML = T.length ? T.map(t => `<div class="card tcard" data-t="${t.id}" data-s="${esc(t.shop+' '+t.name+' '+(t.area||''))}">
-      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div></div>${S.me.admin ? `<span class="st" style="background:${userActive(t)?'#059669':'#dc2626'}">${userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
+      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div></div>${S.me.admin ? `<span class="st" style="background:${t.frozen?'#2563eb':t.hidden?'#6b7280':userActive(t)?'#059669':'#dc2626'}">${t.frozen?'🧊 مجمّد':t.hidden?'🙈 مخفي':userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
     : emptyBox('🏭','ما في تجار جملة مسجلين بعد.<br>شارك التطبيق مع التجار اللي تتعامل معهم.');
   bindSearch('#srch', '.tcard');
   $$('.tcard').forEach(c => c.onclick = () => { S.viewTrader = T.find(t => t.id===c.dataset.t); render(); window.scrollTo(0,0); });
@@ -806,6 +851,44 @@ function printOrder(o){
   $('#pGo').onclick = () => { if(window.Android && Android.printPage) Android.printPage('طلبية-' + o.no); else window.print(); };
 }
 
+// ---------- delete own account ----------
+function deleteMyAccount(){
+  const m = S.me, dl = isActive() ? daysLeft() : 0;
+  openModal(`<div style="text-align:center"><div style="font-size:54px">⚠️</div><h2>حذف الحساب نهائياً</h2></div>
+    <div class="card" style="background:#fef2f2;border:1px solid #fecaca;line-height:1.9">
+      ${dl > 0 ? `<b>• باقي لك ${dl} يوم في اشتراكك، ولن يتم استرداد أي مبلغ عنها.</b><br>` : ''}
+      • لو كان لك أيام متبقية من الاشتراك <b>لن يتم استرداد المال</b>.<br>
+      • سيتم حذف حسابك <b>نهائياً</b> ولا يمكن استرجاعه.<br>
+      ${m.role==='trader' ? '• ستنحذف كل بضاعتك وتختفي من قائمة التجار.<br>' : '• ستنحذف سلتك وبيانات حسابك.<br>'}
+      • لو بدك ترجع تستخدم التطبيق لازم تعمل حساب جديد وتدفع اشتراك جديد.</div>
+    <label class="role" style="display:flex;gap:8px;align-items:center;margin:12px 0;color:var(--tx)"><input type="checkbox" id="delOk" style="width:auto;display:inline"> قرأت وفهمت، وموافق على حذف حسابي نهائياً</label>
+    <label>اكتب كلمة المرور للتأكيد</label><input type="password" id="delPass">
+    <button class="btn danger big" id="delGo">🗑️ حذف حسابي نهائياً</button>
+    <button class="btn big" id="delNo">تراجع</button>`);
+  $('#delNo').onclick = closeModal;
+  $('#delGo').onclick = async () => {
+    if(!$('#delOk').checked) return toast('لازم توافق على الشروط أولاً');
+    const pass = $('#delPass').value; if(!pass) return toast('اكتب كلمة المرور');
+    const btn = $('#delGo'); btn.disabled = true; btn.textContent = '⏳ جاري الحذف...';
+    const user = auth.currentUser;
+    try {
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, pass));
+    } catch(e){ btn.disabled = false; btn.textContent = '🗑️ حذف حسابي نهائياً'; return toast(/wrong-password|invalid-credential/.test(e.code) ? 'كلمة المرور غلط' : authErr(e)); }
+    try {
+      S.deleting = true;
+      S.unsubs.forEach(u => u()); S.unsubs = [];
+      const refs = [];
+      if(m.role === 'trader'){ const ps = await getDocs(query(collection(db,'products'), where('traderId','==',user.uid))); ps.docs.forEach(d => refs.push(d.ref)); }
+      refs.push(doc(db,'users',user.uid));
+      for(let i = 0; i < refs.length; i += 400){ const bt = writeBatch(db); refs.slice(i, i+400).forEach(r => bt.delete(r)); await bt.commit(); }
+      try { localStorage.removeItem('tj_me_' + user.uid); localStorage.removeItem('tj_cart_' + user.uid); } catch(e){}
+      await deleteUser(user);
+      S.deleting = false; closeModal();
+      toast('تم حذف حسابك نهائياً. مع السلامة 👋');
+    } catch(e){ S.deleting = false; btn.disabled = false; btn.textContent = '🗑️ حذف حسابي نهائياً'; toast('فشل الحذف: ' + (e.code || e.message)); }
+  };
+}
+
 // ---------- account ----------
 function vAccount(){
   setTitle('حسابي');
@@ -822,6 +905,7 @@ function vAccount(){
       <button class="btn primary big">حفظ التعديلات</button></form>
     <div class="card"><button class="btn big" id="share" style="margin-top:0">📲 شارك التطبيق على واتساب</button>
       <button class="btn danger big" id="out">🚪 تسجيل خروج</button></div>
+    ${m.admin ? '' : '<div style="text-align:center"><button class="btn small" id="delMe" style="background:none;color:var(--dan);text-decoration:underline">حذف حسابي نهائياً</button></div>'}
     <p class="muted small" style="text-align:center">تاجر جملة · نسخة 1.0</p>`;
   $('#subCard').onclick = () => { S.tab = 'subscribe'; render(); };
   $('#accf').onsubmit = e => {
@@ -832,6 +916,7 @@ function vAccount(){
   };
   $('#share').onclick = () => openExternal('https://wa.me/?text=' + encodeURIComponent(`🛒 تطبيق "تاجر جملة": اطلب بضاعة محلك من تجار الجملة وأنت مكانك، والتاجر يستلم الطلبية جاهزة.\n${SITE_URL}`));
   twoTap($('#out'), 'اضغط مرة ثانية لتسجيل الخروج', () => signOut(auth));
+  if($('#delMe')) $('#delMe').onclick = deleteMyAccount;
 }
 </script>
 </body>
