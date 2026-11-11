@@ -172,7 +172,7 @@ const userActive = u => u.admin === true || (!u.frozen && !u.deleted && (u.subUn
 const fmtDay = ms => new Date(ms).toLocaleDateString('ar-u-nu-latn', { year:'numeric', month:'short', day:'numeric' });
 const priceFor = role => role === 'trader' ? S.cfg.traderPrice : S.cfg.grocerPrice;
 async function loadCfg(){ try { const c = await getDoc(doc(db,'config','app')); if(c.exists()) S.cfg = { ...DEFAULT_CFG, ...c.data() }; } catch(e){} }
-const UNITS = ['كرتونة','حبة','كيس','شوال','ربطة','كيلو','علبة','درزن','باكيت','جالون'];
+const UNITS = ['كرتونة','حبة','قطعة','كيس','شوال','ربطة','كيلو','علبة','درزن','باكيت','جالون'];
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -672,7 +672,7 @@ function vProducts(){
   setTitle('بضاعتي');
   const P = S.products;
   app.innerHTML = `<div class="toolbar"><input class="search" id="srch" placeholder="🔍 بحث في الأصناف" style="margin:0"><button class="btn primary" id="addP">+ صنف</button></div>
-  <div class="row" style="margin:0 0 8px"><button class="btn small" id="impX">📥 رفع أصناف من Excel</button><button class="btn small" id="tplX">📄 نموذج Excel</button>${S.products.length ? '<button class="btn small" id="expX">📤 تصدير بضاعتي</button>' : ''}</div>
+  <div class="row" style="margin:0 0 8px"><button class="btn small" id="impX">📥 رفع أصناف من Excel</button><button class="btn small" id="tplX">📄 نموذج Excel</button><button class="btn small" id="expX">💾 تصدير بضاعتي (حفظ)</button></div>
   <input type="file" id="impFile" hidden>
   <p class="muted small">${P.length} صنف · ${P.filter(p=>p.available!==false).length} متوفر</p>
   ${P.length ? `<div class="plist">${P.map(p => `<div class="pitem ${p.available===false?'off':''}" data-s="${esc(p.name+' '+(p.category||''))}">
@@ -681,7 +681,7 @@ function vProducts(){
     : emptyBox('📦','ما في أصناف بعد.<br>اضغط "+ صنف" لإضافة أول صنف.')}`;
   $('#addP').onclick = () => productForm();
   $('#tplX').onclick = () => productsExcel(true);
-  if($('#expX')) $('#expX').onclick = () => productsExcel(false);
+  $('#expX').onclick = () => S.products.length ? productsExcel(false) : toast('ما في أصناف لتصديرها');
   $('#impX').onclick = () => $('#impFile').click();
   $('#impFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if(f) importProducts(f); };
   bindSearch('#srch', '.pitem');
@@ -947,48 +947,116 @@ async function productsExcel(template){
   XLSX.utils.book_append_sheet(wb, ws, 'الأصناف');
   saveWorkbook(wb, template ? 'نموذج-أصناف-تاجر-جملة.xlsx' : `بضاعة-${S.me.shop}.xlsx`);
 }
-function detectCols(header){
-  const H = header.map(x => nameKey(String(x ?? '')));
-  const find = keys => { for(const k of keys){ const i = H.findIndex(x => x && x.includes(k) && !(k === 'صنف' && x.includes('تصنيف'))); if(i >= 0) return i; } return -1; };
-  const c = { name:find(['اسم','منتج','name','product','item','صنف']), price:find(['سعر','ثمن','price']), unit:find(['وحده','unit']), category:find(['تصنيف','قسم','نوع','category']), desc:find(['تفاصيل','وصف','ملاحظ','desc']), avail:find(['متوفر','available']) };
-  return (c.name >= 0 && c.price >= 0) ? c : null;
+// ---- smart importer ----
+const UNIT_WORDS = [['كرتونه','كرتونة'],['كرتون','كرتونة'],['كراتين','كرتونة'],['صندوق','كرتونة'],['ctn','كرتونة'],['carton','كرتونة'],['box','كرتونة'],
+  ['قطعه','قطعة'],['حبه','حبة'],['حبات','حبة'],['pcs','حبة'],['piece','حبة'],['pc','حبة'],
+  ['شوال','شوال'],['كيس','كيس'],['ربطه','ربطة'],['درزن','درزن'],['دزينه','درزن'],['باكيت','باكيت'],['باكو','باكيت'],['pack','باكيت'],['علبه','علبة'],['جالون','جالون'],['كيلو','كيلو'],['كغ','كيلو'],['kg','كيلو']];
+function unitFrom(text, strict){
+  const k = nameKey(text); if(!k) return '';
+  for(const [w, u] of UNIT_WORDS){ if(strict ? k === w || k === 'ال'+w : k.includes(w)) return u; }
+  return '';
 }
+function unitFromName(name){
+  const k = nameKey(name);
+  if(/(كرتون|كراتين|صندوق|ctn|carton)/.test(k)) return 'كرتونة';
+  if(/\d+\s*[x×*]\s*\d+/i.test(name) || /[x×*]\s*\d+\s*$/i.test(name) || /\d+\s*(حبه|حبات|قطعه|علبه|pcs)/.test(k)) return 'كرتونة';
+  if(/شوال/.test(k)) return 'شوال';
+  if(/ربطه/.test(k)) return 'ربطة';
+  if(/(درزن|دزينه)/.test(k)) return 'درزن';
+  if(/(باكيت|باكو)/.test(k)) return 'باكيت';
+  return '';
+}
+function parsePrice(v){
+  if(typeof v === 'number') return v > 0 ? v : 0;
+  const m = digits(String(v)).replace(/[,،](?=\d{3}\b)/g,'').replace('٫','.').match(/\d+(?:[.,]\d+)?/);
+  return m ? parseFloat(m[0].replace(',','.')) : 0;
+}
+const isNumCell = v => typeof v === 'number' || /^\s*[₪$]?\s*[\d٠-٩]+([.,٫][\d٠-٩]+)?\s*(₪|شيكل|شيقل|nis|ils)?\s*$/i.test(String(v));
+function findHeader(rows){
+  for(let r = 0; r < Math.min(rows.length, 15); r++){
+    const H = rows[r].map(x => nameKey(String(x ?? '')));
+    const nameI = (() => { for(const k of ['اسم','بيان','منتج','صنف','الماده','name','product','item','description']){ const i = H.findIndex(x => x && x.includes(k) && !x.includes('تصنيف') && !x.includes('سعر')); if(i >= 0) return i; } return -1; })();
+    const priceIs = H.map((x,i) => (x && /(سعر|ثمن|price|قيمه)/.test(x)) ? i : -1).filter(i => i >= 0);
+    if(nameI >= 0 && priceIs.length){
+      const f = keys => H.findIndex(x => x && keys.some(k => x.includes(k)));
+      return { row:r, name:nameI, prices:priceIs.map(i => ({ i, unit:unitFrom(rows[r][i]) })), unit:f(['وحده','unit','عبوه']), category:f(['تصنيف','قسم','category','نوع']), desc:f(['تفاصيل','وصف','ملاحظ','note']), avail:f(['متوفر','available']) };
+    }
+  }
+  return null;
+}
+function guessCols(rows){
+  const n = Math.max(...rows.map(r => r.length));
+  const st = [...Array(n)].map((_, c) => {
+    const vals = rows.map(r => r[c]).filter(v => String(v ?? '').trim() !== '');
+    const nums = vals.filter(isNumCell).map(parsePrice);
+    const seq = nums.length > 3 && nums.every((x, i) => i === 0 || x === nums[i-1] + 1);
+    const barcode = nums.length && nums.filter(x => x >= 100000).length > nums.length / 2;
+    return { c, text: vals.filter(v => !isNumCell(v) && String(v).trim().length >= 2).length, nums: nums.length, bad: seq || barcode };
+  });
+  const name = [...st].sort((a,b) => b.text - a.text)[0];
+  const prices = st.filter(s => s.c !== name.c && !s.bad && s.nums >= Math.max(2, rows.length * 0.4)).sort((a,b) => b.nums - a.nums);
+  if(!name || !name.text || !prices.length) return null;
+  return { row:-1, name:name.c, prices:[{ i:prices[0].c, unit:'' }], unit:-1, category:-1, desc:-1, avail:-1 };
+}
+function extractItems(wb){
+  const out = [];
+  for(const sn of wb.SheetNames){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header:1, defval:'', raw:true }).filter(r => r.some(x => String(x).trim() !== ''));
+    if(!rows.length) continue;
+    const cols = findHeader(rows) || guessCols(rows);
+    if(!cols) continue;
+    const main = cols.prices.find(p => p.unit === 'كرتونة') || cols.prices[0];
+    const others = cols.prices.filter(p => p !== main);
+    let cat = wb.SheetNames.length > 1 && !/^(sheet|ورقه)\s*\d*$/i.test(nameKey(sn)) ? sn : '';
+    rows.slice(cols.row + 1).forEach(r => {
+      const g = i => i >= 0 ? String(r[i] ?? '').trim() : '';
+      const name = cleanName(g(cols.name));
+      const price = parsePrice(r[main.i]);
+      const filled = r.filter(x => String(x).trim() !== '').length;
+      if(!price && filled <= 2){ const t = r.map(x => String(x ?? '').trim()).find(x => x && !isNumCell(x)); if(t && t.length < 40) cat = cleanName(t); return; }
+      if(!name || isNumCell(name) || price <= 0) return;
+      if(findHeader([r])) return;
+      const unit = unitFrom(g(cols.unit), true) || unitFrom(g(cols.unit)) || main.unit || unitFromName(name);
+      const extra = others.map(p => { const v = parsePrice(r[p.i]); return v > 0 ? `${p.unit || 'سعر ثاني'}: ${v} ₪` : ''; }).filter(Boolean).join(' · ');
+      const av = nameKey(g(cols.avail));
+      out.push({ name, price, unit, category: g(cols.category) || cat, desc: [g(cols.desc), extra].filter(Boolean).join(' · '), available: !['لا','no','0','false','غيرمتوفر'].includes(av) });
+    });
+  }
+  const m = new Map(); out.forEach(i => m.set(nameKey(i.name), i));
+  return [...m.values()].sort((a,b) => (a.category||'').localeCompare(b.category||'','ar') || a.name.localeCompare(b.name,'ar'));
+}
+
 async function importProducts(file){
   if(!await ensureXLSX()) return;
-  let rows;
-  try {
-    const wb = XLSX.read(await file.arrayBuffer(), { type:'array' });
-    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1, defval:'', raw:true });
-  } catch(e){ return toast('تعذّر قراءة الملف، تأكد إنه ملف Excel'); }
-  rows = rows.filter(r => r.some(x => String(x).trim() !== ''));
-  if(!rows.length) return toast('الملف فاضي');
-  let cols = detectCols(rows[0]), start = 1;
-  if(!cols){ cols = { name:0, price:1, unit:2, category:3, desc:4, avail:5 }; start = 0; }
-  const get = (r, i) => i >= 0 ? String(r[i] ?? '').trim() : '';
-  const items = [], bad = [];
-  rows.slice(start).forEach((r, n) => {
-    const name = cleanName(get(r, cols.name)), price = num(get(r, cols.price));
-    if(!name || price <= 0){ if(name || get(r, cols.price)) bad.push(n + start + 1); return; }
-    let unit = get(r, cols.unit) || 'كرتونة';
-    const av = nameKey(get(r, cols.avail));
-    items.push({ name, price, unit, category:get(r, cols.category), desc:get(r, cols.desc), available: !['لا','no','0','false','غيرمتوفر'].includes(av) });
-  });
-  if(!items.length) return toast('ما لقيت أصناف صالحة. لازم يكون فيه عمود للاسم وعمود للسعر');
+  let items;
+  try { items = extractItems(XLSX.read(await file.arrayBuffer(), { type:'array' })); }
+  catch(e){ return toast('تعذّر قراءة الملف، تأكد إنه ملف Excel'); }
+  if(!items.length) return toast('ما لقيت أصناف بأسعار في الملف. لازم يكون فيه عمود أسماء وعمود أسعار');
   const byKey = new Map(S.products.map(p => [nameKey(p.name), p]));
-  const upd = items.filter(i => byKey.has(nameKey(i.name))), add = items.filter(i => !byKey.has(nameKey(i.name)));
-  openModal(`<h2>📥 رفع الأصناف</h2>
-    <div class="kv"><div><span>أصناف جديدة</span><b>${add.length}</b></div><div><span>موجودة (بيتحدّث سعرها)</span><b>${upd.length}</b></div>
-    ${bad.length ? `<div style="grid-column:1/-1"><span>صفوف ناقصة (بدون اسم أو سعر) ما رح تنرفع</span><b>${bad.length}</b> · صفوف: ${bad.slice(0,10).join('، ')}${bad.length > 10 ? '...' : ''}</div>` : ''}</div>
-    <table class="otable"><thead><tr><th>الصنف</th><th>السعر</th><th>الوحدة</th><th></th></tr></thead><tbody>
-    ${items.slice(0, 30).map(i => `<tr><td>${esc(i.name)}</td><td>${money(i.price)}</td><td>${esc(i.unit)}</td><td>${byKey.has(nameKey(i.name)) ? '🔄' : '🆕'}</td></tr>`).join('')}</tbody></table>
-    ${items.length > 30 ? `<p class="muted small">و ${items.length - 30} صنف كمان...</p>` : ''}
+  const unknown = items.filter(i => !i.unit).length;
+  const nNew = items.filter(i => !byKey.has(nameKey(i.name))).length;
+  const unitOpts = sel => UNITS.map(u => `<option ${u===sel?'selected':''}>${u}</option>`).join('');
+  openModal(`<h2>📥 الأصناف اللي لقيتها بالملف</h2>
+    <div class="kv"><div><span>أصناف جديدة 🆕</span><b>${nNew}</b></div><div><span>موجودة (بيتحدّث سعرها) 🔄</span><b>${items.length - nNew}</b></div></div>
+    ${unknown ? `<div class="card" style="background:#fffbeb;margin:0 0 8px"><b>❓ ${unknown} صنف ما عرفت وحدته</b>
+      <label>اعتبرهم:</label><select id="defUnit">${unitOpts('حبة')}</select><div class="muted small">وبتقدر تغيّر وحدة أي صنف من القائمة تحت</div></div>` : ''}
+    <p class="muted small">راجع الأسعار والوحدات، وعدّل أي وحدة غلط قبل الرفع:</p>
+    <div style="max-height:45vh;overflow:auto"><table class="otable"><thead><tr><th>الصنف</th><th>السعر</th><th>الوحدة</th></tr></thead><tbody>
+    ${items.map((i, n) => `<tr><td>${byKey.has(nameKey(i.name)) ? '🔄' : '🆕'} ${esc(i.name)}${i.category ? `<div class="muted small">${esc(i.category)}</div>` : ''}${i.desc ? `<div class="muted small">${esc(i.desc)}</div>` : ''}</td>
+      <td style="white-space:nowrap">${money(i.price)}</td>
+      <td><select data-u="${n}" ${i.unit ? '' : 'data-unknown="1"'} style="padding:6px;min-width:80px">${unitOpts(i.unit || 'حبة')}</select></td></tr>`).join('')}
+    </tbody></table></div>
     <button class="btn primary big" id="impGo">✅ رفع ${items.length} صنف</button>`);
+  if($('#defUnit')) $('#defUnit').onchange = e => $$('select[data-unknown]').forEach(s => s.value = e.target.value);
+  $$('select[data-u]').forEach(s => s.onchange = () => s.removeAttribute('data-unknown'));
   $('#impGo').onclick = async () => {
+    $$('select[data-u]').forEach(s => items[Number(s.dataset.u)].unit = s.value);
     const btn = $('#impGo'); btn.disabled = true; btn.textContent = '⏳ جاري الرفع...';
+    const add = items.filter(i => !byKey.has(nameKey(i.name))), upd = items.filter(i => byKey.has(nameKey(i.name)));
     try {
       const ops = [
         ...add.map(i => ({ ref: doc(collection(db,'products')), data:{ traderId:S.me.id, ...i, image:'', createdAt:serverTimestamp(), updatedAt:serverTimestamp() }, set:true })),
-        ...upd.map(i => ({ ref: doc(db,'products', byKey.get(nameKey(i.name)).id), data:{ ...i, updatedAt:serverTimestamp() } }))
+        ...upd.map(i => ({ ref: doc(db,'products', byKey.get(nameKey(i.name)).id), data:{ price:i.price, unit:i.unit, ...(i.category ? { category:i.category } : {}), ...(i.desc ? { desc:i.desc } : {}), available:i.available, updatedAt:serverTimestamp() } }))
       ];
       for(let k = 0; k < ops.length; k += 400){
         const bt = writeBatch(db);
@@ -996,7 +1064,7 @@ async function importProducts(file){
         await bt.commit();
         btn.textContent = `⏳ ${Math.min(k + 400, ops.length)} / ${ops.length}`;
       }
-      closeModal(); toast(`✅ انرفع ${add.length} صنف جديد وتحدّث ${upd.length}`);
+      closeModal(); toast(`✅ انضاف ${add.length} صنف جديد وتحدّث ${upd.length}`);
     } catch(e){ btn.disabled = false; btn.textContent = '✅ حاول مرة ثانية'; toast('فشل الرفع: ' + (e.code || e.message)); }
   };
 }
