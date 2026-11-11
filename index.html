@@ -235,6 +235,28 @@ function showDeletedNotice(){
   }, 300);
 }
 
+// ---------- opening hours ----------
+const DAYS = ['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+function fmtTime(t){ if(!t) return ''; let [H, M] = t.split(':').map(Number); const ap = H < 12 ? 'ص' : 'م'; H = H % 12 || 12; return `${H}:${String(M).padStart(2,'0')} ${ap}`; }
+function openNow(t){
+  if(!t.openTime || !t.closeTime) return null;
+  const now = new Date(), day = now.getDay(), mins = now.getHours()*60 + now.getMinutes();
+  const toM = s => { const [a,b] = s.split(':').map(Number); return a*60 + b; };
+  const o = toM(t.openTime), c = toM(t.closeTime);
+  const off = Number(t.offDay ?? -1);
+  if(o === c) return day !== off;
+  if(o < c) return day !== off && mins >= o && mins < c;
+  if(mins >= o) return day !== off;
+  return (day + 6) % 7 !== off && mins < c;
+}
+function hoursLine(t, big){
+  const st = openNow(t); if(st === null) return '';
+  const off = Number(t.offDay ?? -1);
+  return `<div class="small" style="margin-top:${big?8:4}px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+    <span class="st" style="background:${st?'#059669':'#6b7280'}">${st ? '🟢 مفتوح الآن' : '🔴 مغلق الآن'}</span>
+    <span class="muted">🕗 ${fmtTime(t.openTime)} - ${fmtTime(t.closeTime)}${off >= 0 ? ' · عطلة ' + DAYS[off] : ''}</span></div>`;
+}
+
 // ---------- uniqueness helpers ----------
 function fixPhone(s){ let p = normPhone(s); if(p.startsWith('00')) p = p.slice(2); if(/^97[02]/.test(p)) p = '0' + p.slice(3); if(/^5\d{8}$/.test(p)) p = '0' + p; return p; }
 const cleanName = s => String(s || '').trim().replace(/\s+/g, ' ');
@@ -650,12 +672,18 @@ function vProducts(){
   setTitle('بضاعتي');
   const P = S.products;
   app.innerHTML = `<div class="toolbar"><input class="search" id="srch" placeholder="🔍 بحث في الأصناف" style="margin:0"><button class="btn primary" id="addP">+ صنف</button></div>
+  <div class="row" style="margin:0 0 8px"><button class="btn small" id="impX">📥 رفع أصناف من Excel</button><button class="btn small" id="tplX">📄 نموذج Excel</button>${S.products.length ? '<button class="btn small" id="expX">📤 تصدير بضاعتي</button>' : ''}</div>
+  <input type="file" id="impFile" hidden>
   <p class="muted small">${P.length} صنف · ${P.filter(p=>p.available!==false).length} متوفر</p>
   ${P.length ? `<div class="plist">${P.map(p => `<div class="pitem ${p.available===false?'off':''}" data-s="${esc(p.name+' '+(p.category||''))}">
       ${pimg(p)}<div class="pinfo"><b>${esc(p.name)}</b><span class="muted small">${esc(p.unit)}${p.category?' · '+esc(p.category):''}${p.desc?' · '+esc(p.desc):''}</span><span class="price">${money(p.price)}</span></div>
       <div class="pact"><label class="switch" title="متوفر"><input type="checkbox" data-av="${p.id}" ${p.available!==false?'checked':''}><i></i></label><button class="icon" data-edit="${p.id}">✏️</button></div></div>`).join('')}</div>`
     : emptyBox('📦','ما في أصناف بعد.<br>اضغط "+ صنف" لإضافة أول صنف.')}`;
   $('#addP').onclick = () => productForm();
+  $('#tplX').onclick = () => productsExcel(true);
+  if($('#expX')) $('#expX').onclick = () => productsExcel(false);
+  $('#impX').onclick = () => $('#impFile').click();
+  $('#impFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if(f) importProducts(f); };
   bindSearch('#srch', '.pitem');
   $$('[data-edit]').forEach(b => b.onclick = () => productForm(S.products.find(p => p.id===b.dataset.edit)));
   $$('[data-av]').forEach(c => c.onchange = () => {
@@ -711,7 +739,7 @@ async function vTraders(){
   if(S.tab!=='traders' || S.viewTrader) return;
   const T = S.me.admin ? S.traders.filter(t => !t.admin && !t.deleted) : S.traders.filter(t => userActive(t) && !t.hidden && !t.deleted);
   $('#tl').innerHTML = T.length ? T.map(t => `<div class="card tcard" data-t="${t.id}" data-s="${esc(t.shop+' '+t.name+' '+(t.area||''))}">
-      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div></div>${S.me.admin ? `<span class="st" style="background:${t.frozen?'#2563eb':t.hidden?'#6b7280':userActive(t)?'#059669':'#dc2626'}">${t.frozen?'🧊 مجمّد':t.hidden?'🙈 مخفي':userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
+      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div>${hoursLine(t)}</div>${S.me.admin ? `<span class="st" style="background:${t.frozen?'#2563eb':t.hidden?'#6b7280':userActive(t)?'#059669':'#dc2626'}">${t.frozen?'🧊 مجمّد':t.hidden?'🙈 مخفي':userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
     : emptyBox('🏭','ما في تجار جملة مسجلين بعد.<br>شارك التطبيق مع التجار اللي تتعامل معهم.');
   bindSearch('#srch', '.tcard');
   $$('.tcard').forEach(c => c.onclick = () => { S.viewTrader = T.find(t => t.id===c.dataset.t); render(); window.scrollTo(0,0); });
@@ -721,7 +749,7 @@ async function vTraderPage(){
   const t = S.viewTrader;
   setTitle(t.shop);
   app.innerHTML = `<button class="back" id="back">→ رجوع للتجار</button>
-  <div class="card"><b style="font-size:18px">${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div>
+  <div class="card"><b style="font-size:18px">${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div>${hoursLine(t, true)}
     <div class="row"><button class="btn small" id="callT">📞 اتصال</button><button class="btn small" id="waT">💬 واتساب</button></div>
     ${S.me.admin ? `<div class="kv" id="tstats"><div><span>الاشتراك</span><b>${userActive(t) ? 'فعّال' : 'منتهي'}</b>${t.subUntil ? ' حتى '+fmtDay(t.subUntil) : ''}</div><div><span>الطلبيات</span><b>...</b></div></div>` : ''}</div>
   <input class="search" id="srch" placeholder="🔍 ابحث عن صنف"><div class="chips" id="chips"></div>
@@ -897,6 +925,82 @@ function loadXLSX(){
   S._xlsxP = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js'; s.onload = res; s.onerror = () => { S._xlsxP = null; rej(); }; document.head.appendChild(s); });
   return S._xlsxP;
 }
+// ---------- bulk products (Excel) ----------
+async function ensureXLSX(){
+  if(window.XLSX) return true;
+  toast('⏳ جاري تجهيز Excel...');
+  try { await loadXLSX(); return true; } catch(e){ toast('تعذّر تحميل مكتبة Excel، تأكد من الإنترنت'); return false; }
+}
+function saveWorkbook(wb, name){
+  if(window.Android && Android.saveFile) Android.saveFile(XLSX.write(wb, { bookType:'xlsx', type:'base64' }), name, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  else { XLSX.writeFile(wb, name); toast('تم تنزيل الملف'); }
+}
+const PCOLS = ['اسم الصنف', 'السعر', 'الوحدة', 'التصنيف', 'التفاصيل', 'متوفر'];
+async function productsExcel(template){
+  if(!await ensureXLSX()) return;
+  const rows = template
+    ? [PCOLS, ['سنكرز 50غ', 280, 'كرتونة', 'شوكولاتة', 'الكرتونة 24 حبة', 'نعم'], ['زيت ذرة 1.5 لتر', 45, 'حبة', 'زيوت', '', 'نعم']]
+    : [PCOLS, ...S.products.map(p => [p.name, p.price, p.unit, p.category || '', p.desc || '', p.available === false ? 'لا' : 'نعم'])];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:30},{wch:10},{wch:10},{wch:16},{wch:24},{wch:8}];
+  const wb = XLSX.utils.book_new(); wb.Workbook = { Views:[{ RTL:true }] };
+  XLSX.utils.book_append_sheet(wb, ws, 'الأصناف');
+  saveWorkbook(wb, template ? 'نموذج-أصناف-تاجر-جملة.xlsx' : `بضاعة-${S.me.shop}.xlsx`);
+}
+function detectCols(header){
+  const H = header.map(x => nameKey(String(x ?? '')));
+  const find = keys => { for(const k of keys){ const i = H.findIndex(x => x && x.includes(k) && !(k === 'صنف' && x.includes('تصنيف'))); if(i >= 0) return i; } return -1; };
+  const c = { name:find(['اسم','منتج','name','product','item','صنف']), price:find(['سعر','ثمن','price']), unit:find(['وحده','unit']), category:find(['تصنيف','قسم','نوع','category']), desc:find(['تفاصيل','وصف','ملاحظ','desc']), avail:find(['متوفر','available']) };
+  return (c.name >= 0 && c.price >= 0) ? c : null;
+}
+async function importProducts(file){
+  if(!await ensureXLSX()) return;
+  let rows;
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type:'array' });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1, defval:'', raw:true });
+  } catch(e){ return toast('تعذّر قراءة الملف، تأكد إنه ملف Excel'); }
+  rows = rows.filter(r => r.some(x => String(x).trim() !== ''));
+  if(!rows.length) return toast('الملف فاضي');
+  let cols = detectCols(rows[0]), start = 1;
+  if(!cols){ cols = { name:0, price:1, unit:2, category:3, desc:4, avail:5 }; start = 0; }
+  const get = (r, i) => i >= 0 ? String(r[i] ?? '').trim() : '';
+  const items = [], bad = [];
+  rows.slice(start).forEach((r, n) => {
+    const name = cleanName(get(r, cols.name)), price = num(get(r, cols.price));
+    if(!name || price <= 0){ if(name || get(r, cols.price)) bad.push(n + start + 1); return; }
+    let unit = get(r, cols.unit) || 'كرتونة';
+    const av = nameKey(get(r, cols.avail));
+    items.push({ name, price, unit, category:get(r, cols.category), desc:get(r, cols.desc), available: !['لا','no','0','false','غيرمتوفر'].includes(av) });
+  });
+  if(!items.length) return toast('ما لقيت أصناف صالحة. لازم يكون فيه عمود للاسم وعمود للسعر');
+  const byKey = new Map(S.products.map(p => [nameKey(p.name), p]));
+  const upd = items.filter(i => byKey.has(nameKey(i.name))), add = items.filter(i => !byKey.has(nameKey(i.name)));
+  openModal(`<h2>📥 رفع الأصناف</h2>
+    <div class="kv"><div><span>أصناف جديدة</span><b>${add.length}</b></div><div><span>موجودة (بيتحدّث سعرها)</span><b>${upd.length}</b></div>
+    ${bad.length ? `<div style="grid-column:1/-1"><span>صفوف ناقصة (بدون اسم أو سعر) ما رح تنرفع</span><b>${bad.length}</b> · صفوف: ${bad.slice(0,10).join('، ')}${bad.length > 10 ? '...' : ''}</div>` : ''}</div>
+    <table class="otable"><thead><tr><th>الصنف</th><th>السعر</th><th>الوحدة</th><th></th></tr></thead><tbody>
+    ${items.slice(0, 30).map(i => `<tr><td>${esc(i.name)}</td><td>${money(i.price)}</td><td>${esc(i.unit)}</td><td>${byKey.has(nameKey(i.name)) ? '🔄' : '🆕'}</td></tr>`).join('')}</tbody></table>
+    ${items.length > 30 ? `<p class="muted small">و ${items.length - 30} صنف كمان...</p>` : ''}
+    <button class="btn primary big" id="impGo">✅ رفع ${items.length} صنف</button>`);
+  $('#impGo').onclick = async () => {
+    const btn = $('#impGo'); btn.disabled = true; btn.textContent = '⏳ جاري الرفع...';
+    try {
+      const ops = [
+        ...add.map(i => ({ ref: doc(collection(db,'products')), data:{ traderId:S.me.id, ...i, image:'', createdAt:serverTimestamp(), updatedAt:serverTimestamp() }, set:true })),
+        ...upd.map(i => ({ ref: doc(db,'products', byKey.get(nameKey(i.name)).id), data:{ ...i, updatedAt:serverTimestamp() } }))
+      ];
+      for(let k = 0; k < ops.length; k += 400){
+        const bt = writeBatch(db);
+        ops.slice(k, k + 400).forEach(o => o.set ? bt.set(o.ref, o.data) : bt.update(o.ref, o.data));
+        await bt.commit();
+        btn.textContent = `⏳ ${Math.min(k + 400, ops.length)} / ${ops.length}`;
+      }
+      closeModal(); toast(`✅ انرفع ${add.length} صنف جديد وتحدّث ${upd.length}`);
+    } catch(e){ btn.disabled = false; btn.textContent = '✅ حاول مرة ثانية'; toast('فشل الرفع: ' + (e.code || e.message)); }
+  };
+}
+
 async function exportExcel(o){
   if(!window.XLSX){
     toast('⏳ جاري تجهيز ملف Excel...');
@@ -990,6 +1094,10 @@ function vAccount(){
       <label>اسمك</label><input name="name" value="${esc(m.name)}" required>
       <label>اسم المحل / المخزن</label><input name="shop" value="${esc(m.shop)}" required>
       <label>المنطقة</label><input name="area" value="${esc(m.area)}">
+      ${isT && !m.admin ? `<div class="card" style="background:#f0fdfa;margin:12px 0 0"><b>🕗 ساعات الدوام</b><div class="muted small">بتظهر للبقالات مع حالة "مفتوح الآن" أو "مغلق"</div>
+        <div class="row2"><div><label>وقت الفتح</label><input type="time" name="openTime" value="${esc(m.openTime || '')}"></div>
+        <div><label>وقت الإغلاق</label><input type="time" name="closeTime" value="${esc(m.closeTime || '')}"></div></div>
+        <label>يوم العطلة</label><select name="offDay"><option value="-1">بدون عطلة</option>${DAYS.map((d,i) => `<option value="${i}" ${Number(m.offDay ?? -1)===i?'selected':''}>${d}</option>`).join('')}</select></div>` : ''}
       <button class="btn primary big">حفظ التعديلات</button></form>
     <div class="card"><button class="btn big" id="share" style="margin-top:0">📲 شارك التطبيق على واتساب</button>
       <button class="btn danger big" id="out">🚪 تسجيل خروج</button></div>
@@ -999,6 +1107,10 @@ function vAccount(){
   $('#accf').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target), d = { name:cleanName(f.get('name')), shop:cleanName(f.get('shop')), area:f.get('area').trim() };
+    if(f.has('openTime')){
+      d.openTime = f.get('openTime') || ''; d.closeTime = f.get('closeTime') || ''; d.offDay = Number(f.get('offDay'));
+      if(!!d.openTime !== !!d.closeTime) return toast('اكتب وقت الفتح ووقت الإغلاق الاثنين');
+    }
     d.shopKey = nameKey(d.shop);
     if(d.shop.length < 2) return toast('اكتب اسم المحل');
     if(d.shopKey !== nameKey(m.shop || '')){
