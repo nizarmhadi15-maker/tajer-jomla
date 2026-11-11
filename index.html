@@ -163,6 +163,7 @@ const STATUS = { new:['جديدة','#2563eb'], preparing:['قيد التجهيز
 const DAY = 86400000;
 const DEFAULT_CFG = { traderPrice:50, grocerPrice:20, trialDays:14, payInfo:'' };
 S.cfg = { ...DEFAULT_CFG };
+try { const c0 = JSON.parse(localStorage.getItem('tj_cfg') || 'null'); if(c0) S.cfg = { ...S.cfg, ...c0 }; } catch(e){}
 S.atab = 'pays';
 const monthsDays = m => m === 12 ? 365 : m * 30;
 const isActive = () => !!S.me && (S.me.admin === true || (S.me.subUntil || 0) > Date.now());
@@ -266,6 +267,13 @@ function renderAuth(mode='login'){
       <button class="btn primary big" type="submit">${reg ? 'إنشاء الحساب' : 'دخول'}</button>
     </form></div>`;
   $$('.seg button').forEach(b => b.onclick = () => renderAuth(b.dataset.m));
+  const addSup = () => {
+    if(!S.cfg.supportPhone || $('#supLink') || !$('#af')) return;
+    app.insertAdjacentHTML('beforeend', '<p style="text-align:center"><button class="btn small" id="supLink" style="background:none;text-decoration:underline">💬 مشكلة بالدخول؟ تواصل مع الإدارة</button></p>');
+    $('#supLink').onclick = () => whatsapp(S.cfg.supportPhone, 'مرحبا، عندي مشكلة بالدخول على تطبيق تاجر جملة.');
+  };
+  addSup();
+  if(!S._cfgPublic){ S._cfgPublic = true; loadCfg().then(() => { try { localStorage.setItem('tj_cfg', JSON.stringify(S.cfg)); } catch(e){} addSup(); }); }
   $('#af').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target), btn = $('#af button[type=submit]');
@@ -305,8 +313,10 @@ function renderAuth(mode='login'){
       if(reg && String(err.code).includes('email-already-in-use')){
         openModal(`<div style="text-align:center"><div style="font-size:54px">📱</div><h2>هذا الرقم مسجل من قبل</h2>
           <p class="muted">إذا هذا رقمك، سجّل دخول بكلمة المرور تبعتك.<br>وإذا كان حسابك انحذف من الإدارة، تواصل معنا لاسترجاعه.</p>
-          <button class="btn primary big" id="goLogin">🔑 تسجيل دخول</button></div>`);
+          <button class="btn primary big" id="goLogin">🔑 تسجيل دخول</button>
+          ${S.cfg.supportPhone ? '<button class="btn big" id="supWa2">💬 تواصل مع الإدارة على واتساب</button>' : ''}</div>`);
         $('#goLogin').onclick = () => { closeModal(); renderAuth('login'); };
+        if($('#supWa2')) $('#supWa2').onclick = () => whatsapp(S.cfg.supportPhone, 'مرحبا، بدي أسجّل في تطبيق تاجر جملة برقم ' + phone + ' بس بيقلي الرقم مسجل من قبل.');
       } else toast(authErr(err));
     }
   };
