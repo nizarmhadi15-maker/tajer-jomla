@@ -167,7 +167,7 @@ S.atab = 'pays';
 const monthsDays = m => m === 12 ? 365 : m * 30;
 const isActive = () => !!S.me && (S.me.admin === true || (S.me.subUntil || 0) > Date.now());
 const daysLeft = () => Math.max(0, Math.ceil(((S.me?.subUntil || 0) - Date.now()) / DAY));
-const userActive = u => u.admin === true || (!u.frozen && (u.subUntil || 0) > Date.now());
+const userActive = u => u.admin === true || (!u.frozen && !u.deleted && (u.subUntil || 0) > Date.now());
 const fmtDay = ms => new Date(ms).toLocaleDateString('ar-u-nu-latn', { year:'numeric', month:'short', day:'numeric' });
 const priceFor = role => role === 'trader' ? S.cfg.traderPrice : S.cfg.grocerPrice;
 async function loadCfg(){ try { const c = await getDoc(doc(db,'config','app')); if(c.exists()) S.cfg = { ...DEFAULT_CFG, ...c.data() }; } catch(e){} }
@@ -274,9 +274,19 @@ function renderAuth(mode='login'){
           return toast('❌ اسم المحل "' + shop + '" موجود من قبل، اختار اسم ثاني');
         }
         await loadCfg();
-        await setDoc(doc(db,'users',cred.user.uid), { role:f.get('role'), name:cleanName(f.get('name')), shop, shopKey:nameKey(shop), area:(f.get('area')||'').trim(), phone, subUntil: Date.now() + Math.min(30, S.cfg.trialDays) * DAY, createdAt:serverTimestamp() });
+        const tRef = doc(db,'trials',phone);
+        let used = false;
+        try { used = (await getDoc(tRef)).exists(); } catch(e){}
+        const until = used ? Date.now() - 60000 : Date.now() + Math.min(30, S.cfg.trialDays) * DAY;
+        const bt = writeBatch(db);
+        bt.set(doc(db,'users',cred.user.uid), { role:f.get('role'), name:cleanName(f.get('name')), shop, shopKey:nameKey(shop), area:(f.get('area')||'').trim(), phone, subUntil:until, createdAt:serverTimestamp() });
+        if(!used) bt.set(tRef, { phone, at:serverTimestamp() });
+        await bt.commit();
         S.registering = false;
         await enter(cred.user);
+        if(used) openModal(`<div style="text-align:center"><div style="font-size:54px">ℹ️</div><h2>أهلاً فيك من جديد</h2>
+          <p class="muted">هذا الرقم استخدم <b>التجربة المجانية</b> من قبل، فما في تجربة مجانية ثانية.<br>اشترك عشان تكمل استخدام التطبيق.</p>
+          <button class="btn primary big" id="goSub">💳 اشترك الآن</button></div>`), $('#goSub').onclick = () => { closeModal(); S.tab = 'subscribe'; render(); };
       } else {
         await signInWithEmailAndPassword(auth, phoneEmail(phone), f.get('pass'));
       }
@@ -298,12 +308,14 @@ async function enter(user){
   try { const c = JSON.parse(localStorage.getItem('tj_cfg') || 'null'); if(c) S.cfg = { ...DEFAULT_CFG, ...c }; } catch(e){}
   const cfgP = loadCfg().then(() => { try { localStorage.setItem('tj_cfg', JSON.stringify(S.cfg)); } catch(e){} });
   if(cached){
+    if(cached.deleted){ try { localStorage.removeItem(meKey); } catch(e){} toast('⛔ تم حذف هذا الحساب من إدارة التطبيق'); await signOut(auth); return; }
     S.me = { id:user.uid, ...cached };
   } else {
     app.innerHTML = '<div class="splash"><div class="slogo">🛒</div><b>تاجر جملة</b><div class="spin"></div></div>';
     let snap;
     try { snap = await getDoc(doc(db,'users',user.uid)); } catch(e){ app.innerHTML = emptyBox('📡','تعذّر الاتصال. تأكد من الإنترنت وأعد فتح التطبيق.'); return; }
     if(!snap.exists()){ toast('الحساب غير مكتمل، سجّل من جديد'); await signOut(auth); return; }
+    if(snap.data().deleted){ toast('⛔ تم حذف هذا الحساب من إدارة التطبيق'); await signOut(auth); return; }
     S.me = { id:user.uid, ...snap.data() };
     await cfgP;
   }
@@ -317,11 +329,16 @@ async function enter(user){
     if(!s.exists()){ if(!s.metadata.fromCache){ try { localStorage.removeItem(meKey); } catch(e){} toast('الحساب غير موجود، سجّل من جديد'); signOut(auth); } return; }
     const was = isActive(), oldAdmin = !!S.me.admin, oldFrozen = !!S.me.frozen;
     const d = s.data();
+    if(d.deleted){ try { localStorage.removeItem(meKey); } catch(e){} S.unsubs.forEach(u => u()); S.unsubs = []; toast('⛔ تم حذف هذا الحساب من إدارة التطبيق'); signOut(auth); return; }
     S.me = { id:user.uid, ...d };
     try { localStorage.setItem(meKey, JSON.stringify({ ...d, createdAt:null })); } catch(e){}
     if(was !== isActive()){ toast(isActive() ? '✅ تم تفعيل اشتراكك' : '⛔ انتهى اشتراكك'); render(); }
     else if(oldAdmin !== !!S.me.admin || oldFrozen !== !!S.me.frozen) render();
   }));
+  if(!S.me.admin && S.me.phone){
+    const tRef = doc(db,'trials',S.me.phone);
+    getDoc(tRef).then(t => { if(!t.exists()) setDoc(tRef, { phone:S.me.phone, at:serverTimestamp() }).catch(() => {}); }).catch(() => {});
+  }
   S.tab = S.me.admin ? 'traders' : (S.me.role === 'trader' ? 'products' : 'traders');
   S.firstOrders = true; S.traders = null; S.viewTrader = null;
   $('#topbar').classList.remove('hidden'); $('#tabs').classList.remove('hidden');
@@ -467,13 +484,16 @@ async function vAdmin(){
     }
     else if(A === 'users'){
       const snap = await getDocs(collection(db,'users'));
-      const U = snap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => (a.subUntil||0) - (b.subUntil||0));
+      const ALL = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+      const DEL = ALL.filter(u => u.deleted && u.role);
+      const U = ALL.filter(u => !u.deleted).sort((a,b) => (a.subUntil||0) - (b.subUntil||0));
       const paid = U.filter(u => !u.admin);
       const at = paid.filter(u => u.role==='trader' && userActive(u)).length, ag = paid.filter(u => u.role==='grocer' && userActive(u)).length;
       box.innerHTML = `<div class="kv" style="margin-top:0">
           <div><span>تجار جملة</span><b>${paid.filter(u=>u.role==='trader').length}</b> (فعّال ${at})</div>
           <div><span>بقالات</span><b>${paid.filter(u=>u.role==='grocer').length}</b> (فعّال ${ag})</div>
           <div style="grid-column:1/-1"><span>الدخل الشهري المتوقع من الفعّالين (بما فيهم التجربة)</span><b>${money(at*S.cfg.traderPrice + ag*S.cfg.grocerPrice)}</b></div></div>
+        ${DEL.length ? `<button class="btn big" id="showDel" style="margin:0 0 10px">♻️ المحذوفين (${DEL.length})</button>` : ''}
         <input class="search" id="usrch" placeholder="🔍 ابحث بالاسم أو الرقم">
         ${U.map(u => { const a = userActive(u); return `<div class="card urow" data-s="${esc(u.shop+' '+u.name+' '+u.phone)}">
           <div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b><span>${u.hidden ? '<span class="st" style="background:#6b7280">🙈 مخفي</span> ' : ''}${u.frozen ? '<span class="st" style="background:#2563eb">🧊 مجمّد</span>' : `<span class="st" style="background:${a?'#059669':'#dc2626'}">${u.admin?'إدارة':(a?'فعّال':'منتهي')}</span>`}</span></div>
@@ -497,6 +517,28 @@ async function vAdmin(){
           } catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
         });
       });
+      if($('#showDel')) $('#showDel').onclick = () => {
+        openModal(`<h2>♻️ الحسابات المحذوفة</h2><p class="muted small">ارجع أي حساب لو تواصل معكم. بيرجع زي ما كان بنفس اشتراكه وبضاعته.</p>
+          ${DEL.map(u => `<div class="card" style="background:#f8fafc"><div class="ohead"><b>${u.role==='trader'?'🏭':'🏪'} ${esc(u.shop)}</b>
+            <button class="btn small primary" data-res="${u.id}">♻️ استرجاع</button></div>
+            <div class="muted small">${esc(u.name)} · ${esc(u.phone)}${u.deletedAt ? ' · انحذف '+fmtDate(u.deletedAt) : ''}</div></div>`).join('')}`);
+        $$('[data-res]').forEach(b => {
+          const u = DEL.find(x => x.id===b.dataset.res);
+          twoTap(b, 'تأكيد؟', async () => {
+            b.disabled = true;
+            try {
+              await updateDoc(doc(db,'users',u.id), { deleted:false });
+              if(S.traders) S.traders = null;
+              closeModal(); toast(`♻️ رجع حساب ${u.shop}`);
+              openModal(`<div style="text-align:center"><div style="font-size:50px">♻️</div><h2>رجع حساب ${esc(u.shop)}</h2>
+                <p class="muted">${userActive(u) ? 'اشتراكه فعّال حتى ' + fmtDay(u.subUntil) : 'اشتراكه منتهي، مدّده إذا لزم'}</p>
+                <button class="btn primary big" id="waRes">💬 بلّغه على واتساب</button></div>`);
+              $('#waRes').onclick = () => whatsapp(u.phone, `مرحبا ${u.name}، تم إرجاع حسابك في تطبيق تاجر جملة، وبتقدر تدخل عليه هلأ 🌹`);
+              vAdmin();
+            } catch(err){ b.disabled = false; toast('فشل: ' + err.code); }
+          });
+        });
+      };
       $$('[data-frz]').forEach(b => {
         const u = U.find(x => x.id===b.dataset.frz), on = !u.frozen;
         twoTap(b, on ? 'تأكيد التجميد؟' : 'تأكيد فك التجميد؟', async () => {
@@ -516,15 +558,13 @@ async function vAdmin(){
       $$('[data-del]').forEach(b => b.onclick = () => {
         const u = U.find(x => x.id===b.dataset.del);
         openModal(`<div style="text-align:center"><div style="font-size:50px">🗑️</div><h2>حذف ${esc(u.shop)}؟</h2>
-          <p class="muted">${u.role==='trader' ? 'رح ينحذف الحساب وكل بضاعته، ويختفي من قائمة التجار.' : 'رح ينحذف حساب البقالة.'}<br>الطلبيات القديمة بتضل محفوظة. وما بيقدر يدخل على التطبيق بعدها.</p>
+          <p class="muted">${u.role==='trader' ? 'الحساب بيختفي من قائمة التجار' : 'حساب البقالة بيتقفل'} وما بيقدر صاحبه يدخل على التطبيق.<br>بياناته بتضل محفوظة، وبتقدر ترجعه من قائمة <b>♻️ المحذوفين</b> لو تواصل معكم.</p>
           <button class="btn danger big" id="delGo">🗑️ تأكيد الحذف نهائياً</button><button class="btn big" id="delNo">إلغاء</button></div>`);
         $('#delNo').onclick = closeModal;
         twoTap($('#delGo'), 'متأكد؟ اضغط مرة ثانية', async () => {
           $('#delGo').disabled = true;
           try {
-            const ps = await getDocs(query(collection(db,'products'), where('traderId','==',u.id)));
-            const docs = [...ps.docs.map(d => d.ref), doc(db,'users',u.id)];
-            for(let i = 0; i < docs.length; i += 400){ const bt = writeBatch(db); docs.slice(i, i+400).forEach(r => bt.delete(r)); await bt.commit(); }
+            await updateDoc(doc(db,'users',u.id), { deleted:true, deletedAt:serverTimestamp() });
             if(S.traders) S.traders = S.traders.filter(t => t.id !== u.id);
             closeModal(); toast(`تم حذف ${u.shop}`); vAdmin();
           } catch(err){ toast('فشل الحذف: ' + err.code); if($('#delGo')) $('#delGo').disabled = false; }
@@ -640,7 +680,7 @@ async function vTraders(){
     } catch(e){ $('#tl').innerHTML = emptyBox('📡','تعذّر تحميل التجار. تأكد من الإنترنت.'); return; }
   }
   if(S.tab!=='traders' || S.viewTrader) return;
-  const T = S.me.admin ? S.traders.filter(t => !t.admin) : S.traders.filter(t => userActive(t) && !t.hidden);
+  const T = S.me.admin ? S.traders.filter(t => !t.admin && !t.deleted) : S.traders.filter(t => userActive(t) && !t.hidden && !t.deleted);
   $('#tl').innerHTML = T.length ? T.map(t => `<div class="card tcard" data-t="${t.id}" data-s="${esc(t.shop+' '+t.name+' '+(t.area||''))}">
       <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div></div>${S.me.admin ? `<span class="st" style="background:${t.frozen?'#2563eb':t.hidden?'#6b7280':userActive(t)?'#059669':'#dc2626'}">${t.frozen?'🧊 مجمّد':t.hidden?'🙈 مخفي':userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
     : emptyBox('🏭','ما في تجار جملة مسجلين بعد.<br>شارك التطبيق مع التجار اللي تتعامل معهم.');
