@@ -303,7 +303,7 @@ async function enter(user){
     if(was !== isActive()){ toast(isActive() ? '✅ تم تفعيل اشتراكك' : '⛔ انتهى اشتراكك'); render(); }
     else if(oldAdmin !== !!S.me.admin) render();
   }));
-  S.tab = S.me.role === 'trader' ? 'products' : 'traders';
+  S.tab = S.me.admin ? 'traders' : (S.me.role === 'trader' ? 'products' : 'traders');
   S.firstOrders = true; S.traders = null; S.viewTrader = null;
   $('#topbar').classList.remove('hidden'); $('#tabs').classList.remove('hidden');
   const field = S.me.role === 'trader' ? 'traderId' : 'grocerId';
@@ -337,7 +337,8 @@ function badge(k){
 }
 function renderTabs(){
   const nav = $('#tabs');
-  const tabs = S.me.admin ? [...TABS[S.me.role], ['admin','⚙️','الإدارة']] : TABS[S.me.role];
+  const tabs = S.me.admin ? [['traders','🏭','التجار'],['admin','⚙️','الإدارة'],['account','👤','حسابي']] : TABS[S.me.role];
+  if(!tabs.some(t => t[0]===S.tab) && !['subscribe'].includes(S.tab)) S.tab = tabs[0][0];
   nav.innerHTML = tabs.map(([k,i,l]) => `<button class="${S.tab===k?'on':''}" data-tab="${k}"><span>${i}</span>${l}${badge(k)}</button>`).join('');
   $$('button', nav).forEach(b => b.onclick = () => { if(S.tab===b.dataset.tab && b.dataset.tab==='traders') S.viewTrader=null; S.tab=b.dataset.tab; render(); window.scrollTo(0,0); });
 }
@@ -554,9 +555,9 @@ async function vTraders(){
     } catch(e){ $('#tl').innerHTML = emptyBox('📡','تعذّر تحميل التجار. تأكد من الإنترنت.'); return; }
   }
   if(S.tab!=='traders' || S.viewTrader) return;
-  const T = S.traders.filter(userActive);
+  const T = S.me.admin ? S.traders.filter(t => !t.admin) : S.traders.filter(userActive);
   $('#tl').innerHTML = T.length ? T.map(t => `<div class="card tcard" data-t="${t.id}" data-s="${esc(t.shop+' '+t.name+' '+(t.area||''))}">
-      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div></div><span class="muted">‹</span></div>`).join('')
+      <div class="av">🏭</div><div style="flex:1"><b>${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}${S.me.admin?' · '+esc(t.phone):''}</div></div>${S.me.admin ? `<span class="st" style="background:${userActive(t)?'#059669':'#dc2626'}">${userActive(t)?'فعّال':'منتهي'}</span>` : '<span class="muted">‹</span>'}</div>`).join('')
     : emptyBox('🏭','ما في تجار جملة مسجلين بعد.<br>شارك التطبيق مع التجار اللي تتعامل معهم.');
   bindSearch('#srch', '.tcard');
   $$('.tcard').forEach(c => c.onclick = () => { S.viewTrader = T.find(t => t.id===c.dataset.t); render(); window.scrollTo(0,0); });
@@ -567,7 +568,8 @@ async function vTraderPage(){
   setTitle(t.shop);
   app.innerHTML = `<button class="back" id="back">→ رجوع للتجار</button>
   <div class="card"><b style="font-size:18px">${esc(t.shop)}</b><div class="muted small">${esc(t.name)}${t.area?' · 📍 '+esc(t.area):''}</div>
-    <div class="row"><button class="btn small" id="callT">📞 اتصال</button><button class="btn small" id="waT">💬 واتساب</button></div></div>
+    <div class="row"><button class="btn small" id="callT">📞 اتصال</button><button class="btn small" id="waT">💬 واتساب</button></div>
+    ${S.me.admin ? `<div class="kv" id="tstats"><div><span>الاشتراك</span><b>${userActive(t) ? 'فعّال' : 'منتهي'}</b>${t.subUntil ? ' حتى '+fmtDay(t.subUntil) : ''}</div><div><span>الطلبيات</span><b>...</b></div></div>` : ''}</div>
   <input class="search" id="srch" placeholder="🔍 ابحث عن صنف"><div class="chips" id="chips"></div>
   <div id="pl"><div class="loading">⏳ جاري تحميل البضاعة...</div></div>
   <div class="cartbar hidden" id="cartbar"></div>`;
@@ -587,7 +589,7 @@ async function vTraderPage(){
   $('#chips').innerHTML = cats.length ? `<button class="chip on" data-c="">الكل</button>` + cats.map(c => `<button class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('') : '';
   $('#pl').innerHTML = P.length ? `<div class="plist">${P.map(p => { const off = p.available===false; return `<div class="pitem ${off?'off':''}" data-s="${esc(p.name+' '+(p.category||''))}" data-cat="${esc(p.category||'')}">
       ${pimg(p)}<div class="pinfo"><b>${esc(p.name)}</b><span class="muted small">${esc(p.unit)}${p.desc?' · '+esc(p.desc):''}</span><span class="price">${money(p.price)}</span></div>
-      ${off ? '<span class="tag">غير متوفر</span>' : `<div class="step" data-p="${p.id}"><button data-d="1">+</button><input inputmode="numeric" value="${items[p.id]?.qty||0}"><button data-d="-1">−</button></div>`}</div>`; }).join('')}</div>`
+      ${off ? '<span class="tag">غير متوفر</span>' : S.me.admin ? '' : `<div class="step" data-p="${p.id}"><button data-d="1">+</button><input inputmode="numeric" value="${items[p.id]?.qty||0}"><button data-d="-1">−</button></div>`}</div>`; }).join('')}</div>`
     : emptyBox('📦','هذا التاجر ما أضاف بضاعة بعد.');
   bindSearch('#srch', '.pitem');
   $$('.chip').forEach(c => c.onclick = () => { $$('.chip').forEach(x => x.classList.toggle('on', x===c)); $$('.pitem').forEach(el => el.classList.toggle('hidden', !!c.dataset.c && el.dataset.cat!==c.dataset.c)); });
@@ -599,6 +601,13 @@ async function vTraderPage(){
     inp.onfocus = () => inp.select();
   });
   updateCartBar();
+  if(S.me.admin && $('#tstats')){
+    try {
+      const os = await getDocs(query(collection(db,'orders'), where('traderId','==',t.id)));
+      const O = os.docs.map(d => d.data());
+      if($('#tstats')) $('#tstats').children[1].innerHTML = `<span>الطلبيات</span><b>${O.length}</b> · ${money(O.reduce((s,o) => s + (o.total||0), 0))}`;
+    } catch(e){}
+  }
 }
 
 // ---------- cart ----------
